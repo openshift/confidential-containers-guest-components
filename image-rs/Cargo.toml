@@ -10,7 +10,7 @@ edition = "2021"
 
 [dependencies]
 anyhow.workspace = true
-async-compression = { version = "0.4.18", features = [
+async-compression = { version = "0.4.23", features = [
     "futures-io",
     "tokio",
     "gzip",
@@ -28,11 +28,11 @@ futures = { version = "0.3.31", optional = true }
 futures-util = "0.3"
 hex = { workspace = true, optional = true }
 kbc = { path = "../attestation-agent/kbc", default-features = false, optional = true }
-log = "0.4.25"
+log = "0.4.27"
 loopdev = { git = "https://github.com/mdaffin/loopdev", rev = "c9f91e8f0326ce8a3364ac911e81eb32328a5f27" }
 nix = { workspace = true, optional = true, features = ["mount", "fs"] }
 oci-client = { version = "0.14", default-features = false, optional = true }
-oci-spec = "0.7.1"
+oci-spec = "0.8.1"
 ocicrypt-rs = { path = "../ocicrypt-rs", default-features = false, features = [
     "async-io",
 ], optional = true }
@@ -40,7 +40,7 @@ prost = { workspace = true, optional = true }
 protobuf = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["json"], optional = true }
 resource_uri = { path = "../attestation-agent/deps/resource_uri", optional = true }
-sequoia-openpgp = { version = "1.22.0", default-features = false, features = [
+sequoia-openpgp = { version = "2.0.0", default-features = false, features = [
     "compression",
     "crypto-rust",
     "allow-experimental-crypto",
@@ -55,7 +55,8 @@ strum.workspace = true
 strum_macros = "0.27"
 astral-tokio-tar = "0.5.1"
 tokio.workspace = true
-tokio-util = "0.7.13"
+tokio-util = "0.7.15"
+toml.workspace = true
 tonic = { workspace = true, optional = true }
 ttrpc = { workspace = true, features = ["async"], optional = true }
 url = "2.5.4"
@@ -79,6 +80,7 @@ rstest.workspace = true
 serial_test = "3.2.0"
 strum.workspace = true
 tempfile.workspace = true
+testcontainers.workspace = true
 test-utils = { path = "libs/test-utils" }
 tokio = { workspace = true, features = ["process"] }
 
