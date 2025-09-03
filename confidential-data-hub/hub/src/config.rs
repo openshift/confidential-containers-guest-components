@@ -20,6 +20,9 @@ cfg_if::cfg_if! {
     }
 }
 
+const CDH_DEFAULT_IMAGE_AUTHENTICATED_REGISTRY_CREDENTIALS: &str =
+    "CDH_DEFAULT_IMAGE_AUTHENTICATED_REGISTRY_CREDENTIALS";
+
 #[derive(Clone, Deserialize, Debug, PartialEq)]
 pub struct KbsConfig {
     pub name: String,
@@ -55,7 +58,10 @@ pub struct CdhConfig {
     #[serde(default)]
     pub credentials: Vec<Credential>,
 
-    #[serde(default)]
+    /// Image pull configuration. Note that if `[image]` section is not given,
+    /// the image pull configuration will be read from kernel commandline together
+    /// with default values.
+    #[serde(default = "ImageConfig::from_kernel_cmdline")]
     pub image: ImageConfig,
 
     pub socket: String,
@@ -81,15 +87,22 @@ impl CdhConfig {
                 Self::from_file(&path)?
             }
             None => {
-                info!("No config path specified, use a default config.");
+                info!("No config path specified, use a default config (some parts will read from kernel cmdline).");
                 Self {
                     kbc: KbsConfig::new()?,
                     credentials: Vec::new(),
                     socket: DEFAULT_CDH_SOCKET_ADDR.into(),
-                    image: ImageConfig::default(),
+                    image: ImageConfig::from_kernel_cmdline(),
                 }
             }
         };
+
+        if let std::result::Result::Ok(env) =
+            env::var(CDH_DEFAULT_IMAGE_AUTHENTICATED_REGISTRY_CREDENTIALS)
+        {
+            info!("Read authenticated registry credentials URI from env: {env}");
+            config.image.authenticated_registry_credentials_uri = Some(env);
+        }
 
         config.extend_credentials_from_kernel_cmdline()?;
         Ok(config)
@@ -164,8 +177,12 @@ mod tests {
     use std::{env, io::Write};
 
     use anyhow::anyhow;
-    use image_rs::config::ImageConfig;
+    use image_rs::{
+        config::{ImageConfig, ProxyConfig},
+        registry::{Config, Mirror, Registry},
+    };
     use rstest::rstest;
+    use serial_test::serial;
 
     use crate::{config::DEFAULT_CDH_SOCKET_ADDR, CdhConfig, KbsConfig};
 
@@ -185,7 +202,21 @@ sigstore_config_uri = "kbs:///default/sigstore-config/test"
 image_security_policy_uri = "kbs:///default/security-policy/test"
 authenticated_registry_credentials_uri = "kbs:///default/credential/test"
 extra_root_certificates = ["cert1", "cert2"]
-image_pull_proxy = "http://127.0.0.1:8080"
+
+[image.registry_config]
+unqualified-search-registries = ["docker.io", "example1.com"]
+
+[[image.registry_config.registry]]
+prefix = "example.com/foo"
+insecure = false
+blocked = false
+location = "internal-registry-for-example.com/bar"
+
+[[image.registry_config.registry.mirror]]
+location = "example-mirror-0.local/mirror-for-foo"
+
+[image.image_pull_proxy]
+https_proxy = "http://127.0.0.1:8080"
     "#,
         Some(CdhConfig {
             kbc: KbsConfig {
@@ -199,8 +230,28 @@ image_pull_proxy = "http://127.0.0.1:8080"
                 sigstore_config_uri: Some("kbs:///default/sigstore-config/test".to_string()),
                 image_security_policy_uri: Some("kbs:///default/security-policy/test".to_string()),
                 authenticated_registry_credentials_uri: Some("kbs:///default/credential/test".to_string()),
-                image_pull_proxy: Some("http://127.0.0.1:8080".into()),
-                skip_proxy_ips: None,
+                registry_config: Some(Config {
+                    unqualified_search_registries: vec!["docker.io".to_string(), "example1.com".to_string()],
+                    registry: vec![
+                        Registry {
+                            prefix: "example.com/foo".to_string(),
+                            insecure: false,
+                            blocked: false,
+                            location: "internal-registry-for-example.com/bar".to_string(),
+                            mirror: vec![
+                                Mirror {
+                                    location: "example-mirror-0.local/mirror-for-foo".to_string(),
+                                    insecure: false, //default
+                                }
+                            ],
+                        }
+                    ],
+                }),
+                image_pull_proxy: Some(ProxyConfig {
+                    https_proxy: Some("http://127.0.0.1:8080".into()),
+                    http_proxy: None,
+                    no_proxy: None,
+                }),
                 extra_root_certificates: vec!["cert1".into(), "cert2".into()],
                 ..Default::default()
             },
@@ -237,7 +288,6 @@ name = "offline_fs_kbc"
                 image_security_policy_uri: None,
                 authenticated_registry_credentials_uri: None,
                 image_pull_proxy: None,
-                skip_proxy_ips: None,
                 ..Default::default()
         },
         socket: DEFAULT_CDH_SOCKET_ADDR.to_string(),
@@ -263,12 +313,12 @@ some_undefined_field = "unknown value"
                 image_security_policy_uri: None,
                 authenticated_registry_credentials_uri: None,
                 image_pull_proxy: None,
-                skip_proxy_ips: None,
                 ..Default::default()
         },
         socket: DEFAULT_CDH_SOCKET_ADDR.to_string(),
     })
     )]
+    #[serial]
     fn read_config(#[case] config: &str, #[case] expected: Option<CdhConfig>) {
         let mut file = tempfile::Builder::new()
             .append(true)
@@ -284,6 +334,7 @@ some_undefined_field = "unknown value"
     }
 
     #[test]
+    #[serial]
     fn test_config_path() {
         // --config takes precedence,
         // then env.CDH_CONFIG_PATH
@@ -297,7 +348,7 @@ some_undefined_field = "unknown value"
             },
             credentials: Vec::new(),
             socket: DEFAULT_CDH_SOCKET_ADDR.into(),
-            image: ImageConfig::default(),
+            image: ImageConfig::from_kernel_cmdline(),
         };
         assert_eq!(config, expected);
 
@@ -314,5 +365,50 @@ some_undefined_field = "unknown value"
         let config = CdhConfig::new(Some("/thing".into())).unwrap_err();
         let expected = anyhow!("Config file /thing not found.");
         assert_eq!(format!("{config}"), format!("{expected}"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_config_auth_override_by_env() {
+        let config = r#"
+[kbc]
+name = "offline_fs_kbc"
+
+[image]
+authenticated_registry_credentials_uri = "kbs:///default/auth/1"
+        "#;
+        let mut file = tempfile::Builder::new()
+            .append(true)
+            .suffix(".toml")
+            .tempfile()
+            .unwrap();
+        file.write_all(config.as_bytes()).unwrap();
+
+        // without env and from config file
+        let config_path = file.path().to_str().unwrap().to_string();
+        let config = CdhConfig::new(Some(config_path.clone())).expect("Must be successful");
+        assert_eq!(
+            config.image.authenticated_registry_credentials_uri,
+            Some("kbs:///default/auth/1".into())
+        );
+
+        // overrided by env
+        env::set_var(
+            "CDH_DEFAULT_IMAGE_AUTHENTICATED_REGISTRY_CREDENTIALS",
+            "file:///test",
+        );
+        let config = CdhConfig::new(Some(config_path.clone())).unwrap();
+        assert_eq!(
+            config.image.authenticated_registry_credentials_uri,
+            Some("file:///test".to_string())
+        );
+        env::remove_var("CDH_DEFAULT_IMAGE_AUTHENTICATED_REGISTRY_CREDENTIALS");
+
+        // no env again
+        let config = CdhConfig::new(Some(config_path)).unwrap();
+        assert_eq!(
+            config.image.authenticated_registry_credentials_uri,
+            Some("kbs:///default/auth/1".into())
+        );
     }
 }

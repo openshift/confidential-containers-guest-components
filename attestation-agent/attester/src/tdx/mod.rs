@@ -4,7 +4,7 @@
 //
 
 use super::tsm_report::*;
-use super::Attester;
+use super::{Attester, TeeEvidence};
 use crate::utils::pad;
 use crate::InitDataResult;
 use anyhow::*;
@@ -33,7 +33,7 @@ fn get_quote_ioctl(report_data: &[u8]) -> Result<Vec<u8>> {
                 let tdx_report_data = tdx_attest_rs::tdx_report_data_t {
                     // report_data.resize() ensures copying report_data to
                     // tdx_attest_rs::tdx_report_data_t cannot panic.
-                    d: report_data.as_slice().try_into().unwrap(),
+                    d: report_data.try_into().unwrap(),
                 };
 
                 match tdx_attest_rs::tdx_att_get_quote(Some(&tdx_report_data), None, None, 0) {
@@ -127,7 +127,7 @@ impl TdxAttester {
 
 #[async_trait::async_trait]
 impl Attester for TdxAttester {
-    async fn get_evidence(&self, mut report_data: Vec<u8>) -> Result<String> {
+    async fn get_evidence(&self, mut report_data: Vec<u8>) -> Result<TeeEvidence> {
         if report_data.len() > TDX_REPORT_DATA_SIZE {
             bail!("TDX Attester: Report data must be no more than {TDX_REPORT_DATA_SIZE} bytes");
         }
@@ -151,7 +151,7 @@ impl Attester for TdxAttester {
         let cc_eventlog = match std::fs::read(CCEL_PATH) {
             Result::Ok(el) => Some(engine.encode(el)),
             Result::Err(e) => {
-                log::warn!("Read CC Eventlog failed: {:?}", e);
+                log::warn!("Read CC Eventlog failed: {e:?}");
                 None
             }
         };
@@ -159,7 +159,7 @@ impl Attester for TdxAttester {
         let aa_eventlog = match std::fs::read_to_string(DEFAULT_EVENTLOG_PATH) {
             Result::Ok(el) => Some(el),
             Result::Err(e) => {
-                log::warn!("Read AA Eventlog failed: {:?}", e);
+                log::warn!("Read AA Eventlog failed: {e:?}");
                 None
             }
         };
@@ -170,7 +170,7 @@ impl Attester for TdxAttester {
             aa_eventlog,
         };
 
-        serde_json::to_string(&evidence).context("Serialize TDX evidence failed")
+        serde_json::to_value(&evidence).context("Serialize TDX evidence failed")
     }
 
     async fn extend_runtime_measurement(

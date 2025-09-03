@@ -21,8 +21,11 @@ use sigstore::{
 };
 use std::{str::FromStr, sync::Arc};
 
-use crate::signature::{
-    image::Image, payload::simple_signing::SigPayload, policy::ref_match::PolicyReqMatchType,
+use crate::{
+    config::ProxyConfig,
+    signature::{
+        image::Image, payload::simple_signing::SigPayload, policy::ref_match::PolicyReqMatchType,
+    },
 };
 use crate::{resource::ResourceProvider, signature::SignatureValidator};
 
@@ -42,8 +45,7 @@ impl SignatureValidator {
                 image,
                 auth,
                 self.certificates.iter().collect(),
-                self.no_proxy.as_ref(),
-                self.https_proxy.as_ref(),
+                self.proxy_config.as_ref(),
             )
             .await
     }
@@ -56,8 +58,7 @@ impl CosignParameters {
         image: &Image,
         auth: &RegistryAuth,
         certificates: Vec<&Certificate>,
-        no_proxy: Option<&String>,
-        https_proxy: Option<&String>,
+        proxy_config: Option<&ProxyConfig>,
     ) -> Result<()> {
         // Check before we access the network
         self.check_reference_rule_types()?;
@@ -72,7 +73,7 @@ impl CosignParameters {
 
         // Verification, will access the network
         let payloads = self
-            .verify_signature_and_get_payload(image, auth, key, certificates, no_proxy, https_proxy)
+            .verify_signature_and_get_payload(image, auth, key, certificates, proxy_config)
             .await?;
 
         // check the reference rules (signed identity)
@@ -112,27 +113,33 @@ impl CosignParameters {
     ///   using the pubkey.
     ///
     /// If succeeds, the payloads of the signature will be returned.
+    #[allow(clippy::too_many_arguments)]
     async fn verify_signature_and_get_payload(
         &self,
         image: &Image,
         auth: &RegistryAuth,
         key: Vec<u8>,
         certificates: Vec<&Certificate>,
-        no_proxy: Option<&String>,
-        https_proxy: Option<&String>,
+        proxy_config: Option<&ProxyConfig>,
     ) -> Result<Vec<SigPayload>> {
         let image_ref = OciReference::from_str(&image.reference.whole())?;
         let auth = match auth {
             RegistryAuth::Anonymous => Auth::Anonymous,
             RegistryAuth::Basic(username, pass) => Auth::Basic(username.clone(), pass.clone()),
+            RegistryAuth::Bearer(token) => Auth::Bearer(token.clone()),
         };
 
-        let config = ClientConfig {
-            no_proxy: no_proxy.cloned(),
-            https_proxy: https_proxy.cloned(),
+        let mut config = ClientConfig {
             extra_root_certificates: certificates.into_iter().cloned().collect(),
             ..Default::default()
         };
+
+        if let Some(proxy) = proxy_config {
+            config.http_proxy = proxy.http_proxy.clone();
+            config.https_proxy = proxy.https_proxy.clone();
+            config.no_proxy = proxy.no_proxy.clone();
+        }
+
         let mut client = ClientBuilder::default()
             .with_oci_client_config(config)
             .build()?;
@@ -243,15 +250,11 @@ mod tests {
                 key,
                 vec![],
                 None,
-                None,
             )
             .await;
         assert!(
             res.is_ok(),
-            "failed test:\nparameter:  {:?}\nimage reference:  {}\nreason:  {:?}",
-            parameter,
-            image_reference,
-            res,
+            "failed test:\nparameter:  {parameter:?}\nimage reference:  {image_reference}\nreason:  {res:?}",
         );
     }
 
@@ -359,22 +362,18 @@ mod tests {
                     &oci_client::secrets::RegistryAuth::Anonymous,
                     vec![],
                     None,
-                    None,
                 )
                 .await;
             assert_eq!(
                 res.is_ok(),
                 allow,
-                "test failed: \nimage: {}\npolicy:{}",
-                image_reference,
-                policy
+                "test failed: \nimage: {image_reference}\npolicy:{policy}",
             );
             if !allow {
                 let err_msg = res.unwrap_err().to_string();
                 assert_eq!(
                     err_msg, failed_reason,
-                    "test failed: failed reason unmatched.\nneed:{}\ngot:{}",
-                    failed_reason, err_msg
+                    "test failed: failed reason unmatched.\nneed:{failed_reason}\ngot:{err_msg}",
                 );
             }
         } else {

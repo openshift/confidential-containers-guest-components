@@ -48,8 +48,7 @@ async fn test_use_registry_configuration(#[case] image_ref: &str, #[case] succes
 
     assert!(
         pull_output.status.success(),
-        "Failed to pull BusyBox image: {:?}",
-        pull_output
+        "Failed to pull BusyBox image: {pull_output:?}",
     );
 
     let tag_output = Command::new("docker")
@@ -59,8 +58,7 @@ async fn test_use_registry_configuration(#[case] image_ref: &str, #[case] succes
         .expect("Failed to tag BusyBox image");
     assert!(
         tag_output.status.success(),
-        "Failed to tag BusyBox image: {:?}",
-        tag_output
+        "Failed to tag BusyBox image: {tag_output:?}",
     );
 
     let push_output = Command::new("docker")
@@ -70,8 +68,7 @@ async fn test_use_registry_configuration(#[case] image_ref: &str, #[case] succes
         .expect("Failed to push BusyBox image to registry");
     assert!(
         push_output.status.success(),
-        "Failed to push BusyBox image to registry: {:?}",
-        push_output
+        "Failed to push BusyBox image to registry: {push_output:?}",
     );
 
     let work_dir = tempfile::tempdir().unwrap();
@@ -80,7 +77,7 @@ async fn test_use_registry_configuration(#[case] image_ref: &str, #[case] succes
     // of cache of old client.
     let mut image_client = image_rs::builder::ClientBuilder::default()
         .registry_configuration_uri("kbs:///default/registry-configuration/test".into())
-        .work_dir(work_dir.into_path())
+        .work_dir(work_dir.path().to_path_buf())
         .build()
         .await
         .unwrap();
@@ -99,7 +96,7 @@ async fn test_use_registry_configuration(#[case] image_ref: &str, #[case] succes
         common::umount_bundle(&bundle_dir);
     }
 
-    assert_eq!(res.is_ok(), successful, "{:?}", res);
+    assert_eq!(res.is_ok(), successful, "{res:?}");
 
     common::clean().await;
 }

@@ -18,8 +18,8 @@ use anyhow::{bail, Context, Result};
 use attester::BoxedAttester;
 use const_format::concatcp;
 
-use crypto::HashAlgorithm;
 use event::AAEventlog;
+use kbs_types::HashAlgorithm;
 use log::debug;
 
 /// AA's eventlog will be put into this parent directory
@@ -71,7 +71,10 @@ impl EventLog {
             // The content of AAEL can be empty when the previous AA created this file
             // but did not do anything.
             if content.is_empty() {
-                let file = File::open(EVENTLOG_PATH).context("open eventlog")?;
+                let file = File::options()
+                    .write(true)
+                    .open(EVENTLOG_PATH)
+                    .context("open eventlog")?;
                 let mut eventlog = Self {
                     writer: Box::new(FileWriter { file }),
                     rtmr_extender,
@@ -230,7 +233,7 @@ impl Display for LogEntry<'_> {
                     HashAlgorithm::Sha384 => ("sha384", value),
                     HashAlgorithm::Sha512 => ("sha512", value),
                 };
-                write!(f, "INIT {}/{}", sha, init_value)
+                write!(f, "INIT {sha}/{init_value}")
             }
         }
     }
@@ -268,11 +271,12 @@ mod tests {
         let lines = Arc::new(Mutex::new(vec![]));
         let tw = TestWriter(lines.clone());
         let tee = detect_tee_type();
-        let rtmr_extender = Arc::new(tee.try_into().unwrap());
+        let rtmr_extender =
+            BoxedAttester::try_from(tee).expect("Failed to create BoxedAttester from Tee type");
         let mut el = EventLog {
             writer: Box::new(tw),
             pcr: 17,
-            rtmr_extender,
+            rtmr_extender: Arc::new(rtmr_extender),
             alg: HashAlgorithm::Sha256,
         };
         let i = LogEntry::Init {
@@ -321,5 +325,68 @@ mod tests {
         let dig = event.digest_with(hash_alg);
         let dig_hex = dig.iter().map(|c| format!("{c:02x}")).collect::<String>();
         assert_eq!(dig_hex, digest);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_eventlog_from_nothing() {
+        if std::path::Path::new(EVENTLOG_PATH).exists() {
+            std::fs::remove_file(EVENTLOG_PATH).unwrap();
+        }
+        let tee = detect_tee_type();
+        let rtmr_extender =
+            BoxedAttester::try_from(tee).expect("Failed to create BoxedAttester from Tee type");
+        let mut eventlog = EventLog::new(Arc::new(rtmr_extender), HashAlgorithm::Sha256, 17)
+            .await
+            .unwrap();
+        eventlog
+            .extend_entry(
+                LogEntry::Event {
+                    domain: "domain",
+                    operation: "operation",
+                    content: "content".try_into().unwrap(),
+                },
+                17,
+            )
+            .await
+            .unwrap();
+        drop(eventlog);
+        std::fs::remove_file(EVENTLOG_PATH).unwrap();
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_eventlog_from_empty_file() {
+        if !Path::new(EVENTLOG_PARENT_DIR_PATH).exists() {
+            std::fs::create_dir_all(EVENTLOG_PARENT_DIR_PATH).unwrap();
+        }
+        let f = std::fs::File::options()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(EVENTLOG_PATH)
+            .unwrap();
+        f.sync_all().unwrap();
+        drop(f);
+
+        let tee = detect_tee_type();
+        let rtmr_extender =
+            BoxedAttester::try_from(tee).expect("Failed to create BoxedAttester from Tee type");
+        let mut eventlog = EventLog::new(Arc::new(rtmr_extender), HashAlgorithm::Sha256, 17)
+            .await
+            .unwrap();
+        eventlog
+            .extend_entry(
+                LogEntry::Event {
+                    domain: "domain",
+                    operation: "operation",
+                    content: "content".try_into().unwrap(),
+                },
+                17,
+            )
+            .await
+            .unwrap();
+        drop(eventlog);
+        std::fs::remove_file(EVENTLOG_PATH).unwrap();
     }
 }

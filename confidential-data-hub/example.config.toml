@@ -115,30 +115,64 @@ image_security_policy_uri = "kbs:///default/security-policy/test"
 # e.g. `file:///etc/image-registry-auth.json`.
 #
 # By default this value is not set.
+#
+# Note that if an environment variable `CDH_DEFAULT_IMAGE_AUTHENTICATED_REGISTRY_CREDENTIALS`
+# is set, the value of the environment variable will be used.
 authenticated_registry_credentials_uri = "kbs:///default/credential/test"
 
-# Proxy that will be used to pull image
+# Registry configuration supports defining registry blocking, mirroring,
+# and remapping rules. This field points to a registry configuration file,
+# which can either be stored locally in the rootfs or retrieved from the KBS.
+#
+# See https://github.com/confidential-containers/guest-components/blob/main/image-rs/docs/registry_configuration.md
+# for more details about the registry configuration file.
+#
+# Now it supports two different forms:
+# - `KBS URI`: the registry configuration will be fetched from KBS,
+# e.g. `kbs:///default/registry-configuration/test`.
+# - `Local Path`: the registry configuration will be fetched from somewhere locally,
+# e.g. `file:///etc/registry-configuration.json`.
 #
 # By default this value is not set.
-image_pull_proxy = "http://127.0.0.1:5432"
+registry_configuration_uri = "kbs:///default/registry-configuration/test"
 
-# No proxy env that will be used to pull image.
-#
-# This will ensure that when we access the image registry with specified
-# IPs, the `image_pull_proxy` will not be used.
-#
-# If `image_pull_proxy` is not set, this field will do nothing.
+# Registry configuration supports registry blocking, mirroring and remapping rules.
+# This field points to a registry configuration file, which can either be stored locally
+# in the rootfs or retrieved from initdata.
 #
 # By default this value is not set.
-skip_proxy_ips = "192.168.0.1,localhost"
+[image.registry_config]
+unqualified-search-registries = ["docker.io", "example1.com"]
+
+[[image.registry_config.registry]]
+prefix = "example.com/banned"
+blocked = true
+
+[[image.registry_config.registry]]
+prefix = "example.com/foo"
+insecure = false
+blocked = false
+location = "internal-registry-for-example.com/bar"
+
+[[image.registry_config.registry.mirror]]
+location = "example-mirror-0.local/mirror-for-foo"
+
+[[image.registry_config.registry.mirror]]
+location = "example-mirror-1.local/mirrors/foo"
+insecure = true
+
+[[image.registry_config.registry]]
+location = "docker.io"
+
+[[image.registry_config.registry.mirror]]
+location = "123456.mirror.aliyuncs.com"
 
 # To support registries with self signed certs. This config item
 # is used to add extra trusted root certifications. The certificates
 # must be encoded by PEM.
 #
 # By default this value is not set.
-extra_root_certificates = [
-"""
+extra_root_certificates = ["""
 -----BEGIN CERTIFICATE-----
 MIIFTDCCAvugAwIBAgIBADBGBgkqhkiG9w0BAQowOaAPMA0GCWCGSAFlAwQCAgUA
 oRwwGgYJKoZIhvcNAQEIMA0GCWCGSAFlAwQCAgUAogMCATCjAwIBATB7MRQwEgYD
@@ -170,10 +204,31 @@ xynud/f525jppJMcD/ofbQxUZuGKvb3f3zy+aLxqidoX7gca2Xd9jyUy5Y/83+ZN
 bz4PZx81UJzXVI9ABEh8/xilATh1ZxOePTBJjN7lgr0lXtKYjV/43yyxgUYrXNZS
 oLSG2dLCK9mjjraPjau34Q==
 -----END CERTIFICATE-----
-"""
-]
+"""]
 
 # The path to store the pulled image layer data.
 #
 # This value defaults to `/run/image-rs/`.
 work_dir = "/run/image-rs"
+
+[image.image_pull_proxy]
+
+# HTTPS proxy that will be used to pull image
+#
+# By default this value is not set.
+https_proxy = "http://127.0.0.1:5432"
+
+# HTTP proxy that will be used to pull image
+#
+# By default this value is not set.
+http_proxy = "http://127.0.0.1:5432"
+
+# No proxy env that will be used to pull image.
+#
+# This will ensure that when we access the image registry with specified
+# IPs, both `https_proxy` and `http_proxy` will not be used.
+#
+# If neither `https_proxy` nor `http_proxy` is not set, this field will do nothing.
+#
+# By default this value is not set.
+no_proxy = "192.168.0.1,localhost"

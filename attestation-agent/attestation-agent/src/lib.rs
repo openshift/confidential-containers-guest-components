@@ -5,15 +5,16 @@
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use attester::{detect_tee_type, BoxedAttester};
+use attester::{detect_attestable_devices, detect_tee_type, BoxedAttester};
 use kbs_types::Tee;
-use std::{str::FromStr, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 
 pub use attester::InitDataResult;
 
 pub mod config;
 mod eventlog;
+pub mod initdata;
 pub mod token;
 
 use eventlog::{Content, EventLog, LogEntry};
@@ -57,8 +58,13 @@ pub trait AttestationAPIs {
     /// Get attestation Token
     async fn get_token(&self, token_type: &str) -> Result<Vec<u8>>;
 
-    /// Get TEE hardware signed evidence that includes the runtime data.
+    /// Get TEE hardware evidence from the primary attester with runtime
+    /// data included.
     async fn get_evidence(&self, runtime_data: &[u8]) -> Result<Vec<u8>>;
+
+    /// Get TEE hardware evidence from all additional attesters with runtime data
+    /// included. If no additional attester is configured, it will return an empty vector.
+    async fn get_additional_evidence(&self, runtime_data: &[u8]) -> Result<Vec<u8>>;
 
     /// Extend runtime measurement register
     async fn extend_runtime_measurement(
@@ -77,10 +83,12 @@ pub trait AttestationAPIs {
 
 /// Attestation agent to provide attestation service.
 pub struct AttestationAgent {
+    primary_tee: Tee,
     config: RwLock<Config>,
-    attester: Arc<BoxedAttester>,
     eventlog: Option<Mutex<EventLog>>,
-    tee: Tee,
+    initdata: Option<String>,
+    primary_attester: Arc<BoxedAttester>,
+    additional_attesters: HashMap<Tee, BoxedAttester>,
 }
 
 impl AttestationAgent {
@@ -88,7 +96,7 @@ impl AttestationAgent {
         let config = self.config.read().await;
         if config.eventlog_config.enable_eventlog {
             let eventlog = EventLog::new(
-                self.attester.clone(),
+                self.primary_attester.clone(),
                 config.eventlog_config.eventlog_algorithm,
                 config.eventlog_config.init_pcr,
             )
@@ -108,22 +116,34 @@ impl AttestationAgent {
                 Config::try_from(config_path)?
             }
             None => {
-                warn!("No AA config file specified. Using a default configuration.");
-                Config::new()?
+                warn!("No AA config file specified. Using a default configuration and the kbs address will be read from kernel cmdline.");
+                Config::default_with_kernel_cmdline()
             }
         };
+        debug!("Using config: {config:#?}");
         let config = RwLock::new(config);
 
-        let tee = detect_tee_type();
-        let attester: BoxedAttester = tee.try_into()?;
-        let attester = Arc::new(attester);
+        let primary_tee = detect_tee_type();
+        let additional_tees = detect_attestable_devices();
+
+        let mut additional_attesters = HashMap::new();
+        for tee in additional_tees {
+            additional_attesters.insert(tee, tee.try_into()?);
+        }
 
         Ok(AttestationAgent {
+            primary_tee,
             config,
-            attester,
             eventlog: None,
-            tee,
+            initdata: None,
+            additional_attesters,
+            primary_attester: Arc::new(primary_tee.try_into()?),
         })
+    }
+
+    /// Set initdata toml as status of current AA instance.
+    pub fn set_initdata_toml(&mut self, initdata_toml: String) {
+        self.initdata = Some(initdata_toml);
     }
 }
 
@@ -135,14 +155,33 @@ impl AttestationAPIs for AttestationAgent {
         match token_type {
             #[cfg(feature = "kbs")]
             token::TokenType::Kbs => {
-                token::kbs::KbsTokenGetter::new(&self.config.read().await.token_configs.kbs)
-                    .get_token()
-                    .await
+                token::kbs::KbsTokenGetter::new(
+                    self.config
+                        .read()
+                        .await
+                        .token_configs
+                        .kbs
+                        .as_ref()
+                        .ok_or(anyhow::anyhow!(
+                            "kbs token config not configured in config file"
+                        ))?,
+                )
+                .get_token(self.initdata.as_deref())
+                .await
             }
+            // TODO: add initdata plaintext for CoCoAS token
             #[cfg(feature = "coco_as")]
             token::TokenType::CoCoAS => {
                 token::coco_as::CoCoASTokenGetter::new(
-                    &self.config.read().await.token_configs.coco_as,
+                    self.config
+                        .read()
+                        .await
+                        .token_configs
+                        .coco_as
+                        .as_ref()
+                        .ok_or(anyhow::anyhow!(
+                            "coco_as token config not configured in config file"
+                        ))?,
                 )
                 .get_token()
                 .await
@@ -150,10 +189,33 @@ impl AttestationAPIs for AttestationAgent {
         }
     }
 
-    /// Get TEE hardware signed evidence that includes the runtime data.
+    /// Get TEE hardware evidence from the primary attester with runtime
+    /// data included.
     async fn get_evidence(&self, runtime_data: &[u8]) -> Result<Vec<u8>> {
-        let evidence = self.attester.get_evidence(runtime_data.to_vec()).await?;
-        Ok(evidence.into_bytes())
+        let evidence = self
+            .primary_attester
+            .get_evidence(runtime_data.to_vec())
+            .await?;
+        Ok(evidence.to_string().into_bytes())
+    }
+
+    /// Get TEE hardware evidence from all additional attesters with runtime data
+    /// included.
+    async fn get_additional_evidence(&self, runtime_data: &[u8]) -> Result<Vec<u8>> {
+        let mut evidence = HashMap::new();
+
+        for (tee, attester) in &self.additional_attesters {
+            evidence.insert(*tee, attester.get_evidence(runtime_data.to_vec()).await?);
+        }
+
+        if evidence.is_empty() {
+            info!("No additional attesters configured, returning empty evidence.");
+            return Ok(vec![]);
+        }
+
+        let evidence: Vec<u8> =
+            serde_json::to_vec(&evidence).context("Failed to serialize additional evidence")?;
+        Ok(evidence)
     }
 
     /// Extend runtime measurement register. Parameters
@@ -201,12 +263,12 @@ impl AttestationAPIs for AttestationAgent {
     /// Perform the initdata binding. If current platform does not support initdata
     /// binding, return `InitdataResult::Unsupported`.
     async fn bind_init_data(&self, init_data: &[u8]) -> Result<InitDataResult> {
-        self.attester.bind_init_data(init_data).await
+        self.primary_attester.bind_init_data(init_data).await
     }
 
     /// Get the tee type of current platform. If no platform is detected,
     /// `Sample` will be returned.
     fn get_tee_type(&self) -> Tee {
-        self.tee
+        self.primary_tee
     }
 }

@@ -2,7 +2,12 @@ syntax = "proto3";
 
 package attestation_agent;
 
+// Get the primary evidence from the guest.
 message GetEvidenceRequest {
+    bytes RuntimeData = 1;
+}
+
+message GetAdditionalEvidenceRequest {
     bytes RuntimeData = 1;
 }
 
@@ -55,6 +60,7 @@ message GetTeeTypeResponse {
 
 service AttestationAgentService {
     rpc GetEvidence(GetEvidenceRequest) returns (GetEvidenceResponse) {};
+    rpc GetAdditionalEvidence(GetAdditionalEvidenceRequest) returns (GetEvidenceResponse) {};
     rpc GetToken(GetTokenRequest) returns (GetTokenResponse) {};
     rpc ExtendRuntimeMeasurement(ExtendRuntimeMeasurementRequest) returns (ExtendRuntimeMeasurementResponse) {};
     rpc BindInitData(BindInitDataRequest) returns (BindInitDataResponse) {};

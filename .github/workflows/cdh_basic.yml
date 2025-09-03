@@ -38,12 +38,6 @@ jobs:
           - ubuntu-24.04
           - s390x
           - ubuntu-24.04-arm
-        rust:
-          - stable
-          - 1.80.0
-        exclude:
-          - instance: ubuntu-24.04-arm
-            rust: stable
     runs-on: ${{ matrix.instance }}
     steps:
       - name: Code checkout
@@ -51,11 +45,9 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install Rust toolchain (${{ matrix.rust }})
+      - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: ${{ matrix.rust }}
-          override: true
           components: rustfmt, clippy
 
       - name: Install protoc
@@ -67,15 +59,12 @@ jobs:
           mkdir -p ${HOME}/.local/bin
           make RESOURCE_PROVIDER=kbs,sev && make install PREFIX=${HOME}/.local
 
+      - name: Run cargo fmt check
+        run: cargo fmt -p kms -p confidential-data-hub -- --check
+
+      - name: Run rust lint check
+        run: cargo clippy -p kms -p confidential-data-hub -- -D warnings
+
       - name: Run cargo test
         run: |
           sudo -E PATH=$PATH -s cargo test --features kbs,aliyun,sev,bin -p kms -p confidential-data-hub
-
-      - name: Run cargo fmt check
-        run: |
-          sudo -E PATH=$PATH -s cargo fmt -p kms -p confidential-data-hub -- --check
-
-      - name: Run rust lint check
-        run: |
-          # We are getting error in generated code due to derive_partial_eq_without_eq check, so ignore it for now
-          sudo -E PATH=$PATH -s cargo clippy -p kms -p confidential-data-hub -- -D warnings -A clippy::derive-partial-eq-without-eq 

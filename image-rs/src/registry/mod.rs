@@ -17,19 +17,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::image::{ImagePullTask, TaskType};
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Mirror {
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Mirror {
     /// The mirror location
-    location: String,
+    pub location: String,
 
     #[serde(default)]
-    insecure: bool,
+    pub insecure: bool,
     // TODO: add pull_from_mirror options
 }
 
 /// Namespaced `[[registry]]` settings declared as
 /// <https://github.com/containers/image/blob/main/docs/containers-registries.conf.5.md#namespaced-registry-settings>
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Registry {
     /// A prefix of the user-specified image name to be replaced
     /// Format like:
@@ -39,35 +39,35 @@ pub struct Registry {
     /// - `host[:port]/namespace[/namespace…]/repo(:_tag|@digest)`
     /// - `[*.]host`
     #[serde(default)]
-    prefix: String,
+    pub prefix: String,
 
     /// Whether unencrypted HTTP as well as TLS connections with untrusted certificates are allowed.
     #[serde(default)]
-    insecure: bool,
+    pub insecure: bool,
 
     /// Whether the registry is blocked.
     #[serde(default)]
-    blocked: bool,
+    pub blocked: bool,
 
     /// Accepts the same format as the prefix field, and specifies the physical
     /// location of the prefix-rooted namespace.
     #[serde(default)]
-    location: String,
+    pub location: String,
 
     /// image mirrors
     #[serde(default)]
-    mirror: Vec<Mirror>,
+    pub mirror: Vec<Mirror>,
     // TODO: add aliases
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Config {
     #[serde(default = "unqualified_search_registries_default")]
     #[serde(rename = "unqualified-search-registries")]
-    unqualified_search_registries: Vec<String>,
+    pub unqualified_search_registries: Vec<String>,
 
     #[serde(default)]
-    registry: Vec<Registry>,
+    pub registry: Vec<Registry>,
     // TODO: add credential-helpers
     // TODO: add additional-layer-store-auth-helper
 }
@@ -112,17 +112,19 @@ enum MatchResult {
     Unmatched,
 }
 
-impl FromStr for RegistryHandler {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut config: Config = toml::from_str(s)?;
+impl RegistryHandler {
+    pub fn new(mut config: Config) -> Result<Self> {
         config.validate_and_tidy()?;
         Ok(Self { config })
     }
-}
 
-impl RegistryHandler {
+    pub fn from_vec(s: Vec<u8>) -> Result<Self> {
+        let registry_configuration = String::from_utf8(s)?;
+        let mut config: Config = toml::from_str(&registry_configuration)?;
+        config.validate_and_tidy()?;
+        Ok(Self { config })
+    }
+
     fn generate_unqualified_search_tasks(&self, reference: &Reference) -> Vec<ImagePullTask> {
         let mut tasks = Vec::new();
 
@@ -371,7 +373,7 @@ location = "docker.io"
 location = "123456.mirror.aliyuncs.com"
 "#;
 
-        RegistryHandler::from_str(config).unwrap()
+        RegistryHandler::from_vec(config.as_bytes().to_vec()).unwrap()
     }
 
     #[test]

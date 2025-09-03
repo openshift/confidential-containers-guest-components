@@ -7,6 +7,7 @@ use anyhow::*;
 use kbs_types::Tee;
 
 pub mod sample;
+pub mod sample_device;
 pub mod utils;
 
 #[cfg(feature = "az-snp-vtpm-attester")]
@@ -30,6 +31,9 @@ pub mod snp;
 #[cfg(feature = "csv-attester")]
 pub mod csv;
 
+#[cfg(feature = "hygon-dcu-attester")]
+pub mod hygon_dcu;
+
 #[cfg(feature = "tsm-report")]
 pub mod tsm_report;
 
@@ -44,6 +48,7 @@ impl TryFrom<Tee> for BoxedAttester {
     fn try_from(value: Tee) -> Result<Self> {
         let attester: Box<dyn Attester + Send + Sync> = match value {
             Tee::Sample => Box::<sample::SampleAttester>::default(),
+            Tee::SampleDevice => Box::<sample_device::SampleDeviceAttester>::default(),
             #[cfg(feature = "tdx-attester")]
             Tee::Tdx => Box::<tdx::TdxAttester>::default(),
             #[cfg(feature = "sgx-attester")]
@@ -58,6 +63,8 @@ impl TryFrom<Tee> for BoxedAttester {
             Tee::Snp => Box::<snp::SnpAttester>::default(),
             #[cfg(feature = "csv-attester")]
             Tee::Csv => Box::<csv::CsvAttester>::default(),
+            #[cfg(feature = "hygon-dcu-attester")]
+            Tee::HygonDcu => Box::<hygon_dcu::DcuAttester>::default(),
             #[cfg(feature = "se-attester")]
             Tee::Se => Box::<se::SeAttester>::default(),
             _ => bail!("TEE is not supported!"),
@@ -72,12 +79,14 @@ pub enum InitDataResult {
     Unsupported,
 }
 
+pub type TeeEvidence = serde_json::Value;
+
 #[async_trait::async_trait]
 pub trait Attester {
     /// Call the hardware driver to get the Hardware specific evidence.
     /// The parameter `report_data` will be used as the user input of the
     /// evidence to avoid reply attack.
-    async fn get_evidence(&self, report_data: Vec<u8>) -> Result<String>;
+    async fn get_evidence(&self, report_data: Vec<u8>) -> Result<TeeEvidence>;
 
     /// Extend TEE specific dynamic measurement register
     /// to enable dynamic measurement capabilities for input data at runtime.
@@ -156,4 +165,21 @@ pub fn detect_tee_type() -> Tee {
          Attestation will continue using the fallback sample attester."
     );
     Tee::Sample
+}
+
+/// Get any additional TEEs that might be connected to the guest,
+/// such as a confidential device.
+pub fn detect_attestable_devices() -> Vec<Tee> {
+    let mut additional_devices = vec![];
+
+    if sample_device::detect_platform() {
+        additional_devices.push(Tee::SampleDevice);
+    }
+
+    #[cfg(feature = "hygon-dcu-attester")]
+    if hygon_dcu::detect_platform() {
+        additional_devices.push(Tee::HygonDcu);
+    }
+
+    additional_devices
 }
