@@ -24,6 +24,7 @@ async-trait.workspace = true
 attester = { path = "../attester", default-features = false }
 crypto = { path = "../deps/crypto" }
 base64.workspace = true
+byteorder = "1.5.0"
 clap = { workspace = true, features = ["derive"], optional = true }
 config.workspace = true
 const_format.workspace = true
@@ -32,8 +33,7 @@ hex.workspace = true
 kbs_protocol = { path = "../kbs_protocol", default-features = false, optional = true }
 kbs-types.workspace = true
 log.workspace = true
-prost = { workspace = true, optional = true }
-protobuf = { workspace = true, optional = true }
+protos = { path = "../../protos", default-features = false, optional = true }
 reqwest = { workspace = true, features = ["json"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -52,11 +52,9 @@ serial_test.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [build-dependencies]
-tonic-build = { workspace = true, optional = true }
-ttrpc-codegen = { workspace = true, optional = true }
 
 [features]
-default = ["rust-crypto"]
+default = ["rust-crypto", "ttrpc", "grpc"]
 
 # Attestation Token support
 token = []
@@ -75,6 +73,8 @@ all-attesters = [
     "snp-attester",
     "se-attester",
     "cca-attester",
+    "tpm-attester",
+    "nvidia-attester",
 ]
 tdx-attester = ["kbs_protocol?/tdx-attester", "attester/tdx-attester"]
 tdx-attester-libtdx = [
@@ -99,6 +99,8 @@ hygon-dcu-attester = [
     "kbs_protocol?/hygon-dcu-attester",
     "attester/hygon-dcu-attester",
 ]
+tpm-attester = ["kbs_protocol?/tpm-attester", "attester/tpm-attester"]
+nvidia-attester = ["kbs_protocol?/nvidia-attester", "attester/nvidia-attester"]
 
 # Either `rust-crypto` or `openssl` should be enabled to work as underlying crypto module
 rust-crypto = ["kbs_protocol?/rust-crypto"]
@@ -106,5 +108,5 @@ openssl = ["kbs_protocol?/openssl"]
 
 # Binary RPC type
 bin = ["clap", "env_logger", "tokio/rt-multi-thread"]
-grpc = ["prost", "tonic", "tonic-build", "tokio/signal"]
-ttrpc = ["dep:ttrpc", "ttrpc-codegen", "protobuf", "tokio/signal"]
+grpc = ["tokio/signal", "tonic", "protos/grpc"]
+ttrpc = ["dep:ttrpc", "tokio/signal", "protos/ttrpc"]

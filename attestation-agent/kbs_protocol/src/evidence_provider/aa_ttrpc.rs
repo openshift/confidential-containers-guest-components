@@ -9,12 +9,10 @@ use kbs_types::Tee;
 use serde_json::json;
 use ttrpc::context;
 
-use crate::{
-    ttrpc_protos::{
-        attestation_agent::{GetAdditionalEvidenceRequest, GetEvidenceRequest, GetTeeTypeRequest},
-        attestation_agent_ttrpc::AttestationAgentServiceClient,
-    },
-    Error, Result,
+use crate::{Error, Result};
+use protos::ttrpc::aa::{
+    attestation_agent::{GetAdditionalEvidenceRequest, GetEvidenceRequest, GetTeeTypeRequest},
+    attestation_agent_ttrpc::AttestationAgentServiceClient,
 };
 
 use super::EvidenceProvider;
@@ -32,6 +30,7 @@ pub struct AAEvidenceProvider {
 impl AAEvidenceProvider {
     pub async fn new() -> Result<Self> {
         let c = ttrpc::r#async::Client::connect(AA_SOCKET_FILE)
+            .await
             .map_err(|e| Error::AATokenProvider(format!("ttrpc connect failed {e}")))?;
         let client = AttestationAgentServiceClient::new(c);
         Ok(Self { client })

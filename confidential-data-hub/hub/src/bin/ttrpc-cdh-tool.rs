@@ -10,18 +10,17 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::{Args, Parser, Subcommand};
 use confidential_data_hub::storage::volume_type::Storage;
-use protos::{
-    api::*,
+
+use protos::ttrpc::cdh::{
+    api::{GetResourceRequest, ImagePullRequest, SecureMountRequest, UnsealSecretInput},
     api_ttrpc::{
         GetResourceServiceClient, ImagePullServiceClient, SealedSecretServiceClient,
         SecureMountServiceClient,
     },
-    keyprovider::*,
+    keyprovider::KeyProviderKeyWrapProtocolInput,
     keyprovider_ttrpc::KeyProviderServiceClient,
 };
 use ttrpc::context;
-
-mod protos;
 
 const NANO_PER_SECOND: i64 = 1000 * 1000 * 1000;
 
@@ -108,7 +107,9 @@ struct PullImageArgs {
 #[tokio::main]
 async fn main() {
     let args = Cli::parse();
-    let inner = ttrpc::asynchronous::Client::connect(&args.socket).expect("connect ttrpc socket");
+    let inner = ttrpc::asynchronous::Client::connect(&args.socket)
+        .await
+        .expect("connect ttrpc socket");
 
     match args.operation {
         Operation::UnsealSecret(arg) => {

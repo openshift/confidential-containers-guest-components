@@ -4,11 +4,11 @@
 //
 
 use crate::router::ApiHandler;
-use crate::ttrpc_proto::confidential_data_hub::GetResourceRequest;
-use crate::ttrpc_proto::confidential_data_hub_ttrpc::GetResourceServiceClient;
 use anyhow::*;
 use async_trait::async_trait;
 use hyper::{Body, Method, Request, Response};
+use protos::ttrpc::cdh::api::GetResourceRequest;
+use protos::ttrpc::cdh::api_ttrpc::GetResourceServiceClient;
 use std::net::SocketAddr;
 
 use crate::utils::split_nth_slash;
@@ -62,8 +62,9 @@ impl ApiHandler for CDHClient {
 }
 
 impl CDHClient {
-    pub fn new(cdh_addr: &str, accepted_method: Vec<Method>) -> Result<Self> {
+    pub async fn new(cdh_addr: &str, accepted_method: Vec<Method>) -> Result<Self> {
         let inner = ttrpc::asynchronous::Client::connect(cdh_addr)
+            .await
             .context(format!("ttrpc connect to CDH addr: {cdh_addr} failed!"))?;
         let client = GetResourceServiceClient::new(inner);
 
