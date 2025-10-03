@@ -5,11 +5,12 @@
 
 use super::tsm_report::*;
 use super::{Attester, TeeEvidence};
-use crate::utils::pad;
+use crate::utils::{pad, read_eventlog};
 use crate::InitDataResult;
 use anyhow::*;
 use base64::Engine;
 use iocuddle::{Group, Ioctl, WriteRead};
+use kbs_types::HashAlgorithm;
 use report::TdReport;
 use scroll::Pread;
 use serde::{Deserialize, Serialize};
@@ -19,7 +20,8 @@ mod report;
 mod rtmr;
 
 const TDX_REPORT_DATA_SIZE: usize = 64;
-const CCEL_PATH: &str = "/sys/firmware/acpi/tables/data/CCEL";
+
+const TDX_RTMR_PATH: &str = "/sys/devices/virtual/misc/tdx_guest/measurements";
 const TDX_GUEST_IOCTL: &str = "/dev/tdx_guest";
 
 pub fn detect_platform() -> bool {
@@ -49,29 +51,29 @@ fn get_quote_ioctl(report_data: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
-// Return true if the TD environment can extend runtime measurement,
-// else false. The best guess at the moment is that if "TSM reports"
-// is available, the TD runs Linux upstream kernel and is _currently_
-// not able to do it.
+// Return true if the TD environment can extend runtime measurement.
+// The best guess at the moment is that if tdx-attest-dcap-ioctls
+// is enabled, runtime measurement is possible. It's also possible
+// if TDX_RTMR_PATH exits. The two are mutually exclusive.
 fn runtime_measurement_extend_available() -> bool {
-    if Path::new("/sys/kernel/config/tsm/report").exists() {
-        return false;
+    cfg_if::cfg_if! {
+            if #[cfg(feature = "tdx-attest-dcap-ioctls")] {
+                true
+            } else {
+                Path::new(TDX_RTMR_PATH).exists()
+        }
     }
-
-    true
 }
-
-pub const DEFAULT_EVENTLOG_PATH: &str = "/run/attestation-agent/eventlog";
 
 #[derive(Serialize, Deserialize)]
 struct TdxEvidence {
-    // Base64 encoded CC Eventlog ACPI table
-    // refer to https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#cc-event-log-acpi-table.
+    /// Base64 encoded Eventlog
+    /// This might include the
+    /// - CCEL: <https://uefi.org/specs/ACPI/6.5/05_ACPI_Software_Programming_Model.html#cc-event-log-acpi-table>
+    /// - AAEL in TCG2 encoding: <https://github.com/confidential-containers/trustee/blob/main/kbs/docs/confidential-containers-eventlog.md>
     cc_eventlog: Option<String>,
     // Base64 encoded TD quote.
     quote: String,
-    // Eventlog of Attestation Agent
-    aa_eventlog: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -113,16 +115,6 @@ impl TdxAttester {
 
         Ok(td_report)
     }
-
-    fn pcr_to_rtmr(register_index: u64) -> u64 {
-        // The match follows https://github.com/confidential-containers/td-shim/blob/main/doc/tdshim_spec.md#td-event-log
-        match register_index {
-            1 | 7 => 0,
-            2..=6 => 1,
-            8..=15 => 2,
-            _ => 3,
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -148,27 +140,9 @@ impl Attester for TdxAttester {
         let engine = base64::engine::general_purpose::STANDARD;
         let quote = engine.encode(quote_bytes);
 
-        let cc_eventlog = match std::fs::read(CCEL_PATH) {
-            Result::Ok(el) => Some(engine.encode(el)),
-            Result::Err(e) => {
-                log::warn!("Read CC Eventlog failed: {e:?}");
-                None
-            }
-        };
+        let cc_eventlog = read_eventlog().await?;
 
-        let aa_eventlog = match std::fs::read_to_string(DEFAULT_EVENTLOG_PATH) {
-            Result::Ok(el) => Some(el),
-            Result::Err(e) => {
-                log::warn!("Read AA Eventlog failed: {e:?}");
-                None
-            }
-        };
-
-        let evidence = TdxEvidence {
-            cc_eventlog,
-            quote,
-            aa_eventlog,
-        };
+        let evidence = TdxEvidence { cc_eventlog, quote };
 
         serde_json::to_value(&evidence).context("Serialize TDX evidence failed")
     }
@@ -182,14 +156,22 @@ impl Attester for TdxAttester {
             bail!("TDX Attester: Cannot extend runtime measurement on this system");
         }
 
-        let rtmr_index = Self::pcr_to_rtmr(register_index);
+        let ccmr_index = self.pcr_to_ccmr(register_index);
+        let rtmr_index = ccmr_index - 1;
 
         let extend_data: [u8; 48] = pad(&event_digest);
 
         log::debug!(
-            "TDX Attester: extend RTRM{rtmr_index}: {}",
+            "TDX Attester: extend RTMR{rtmr_index}: {}",
             hex::encode(extend_data)
         );
+
+        #[cfg(not(feature = "tdx-attest-dcap-ioctls"))]
+        std::fs::write(
+            Path::new(TDX_RTMR_PATH).join(format!("rtmr{rtmr_index}:sha384")),
+            extend_data,
+        )
+        .context("TDX Attester: failed to extend RTMR")?;
 
         #[cfg(feature = "tdx-attest-dcap-ioctls")]
         let event: Vec<u8> = rtmr::TdxRtmrEvent::default()
@@ -225,9 +207,24 @@ impl Attester for TdxAttester {
 
     async fn get_runtime_measurement(&self, pcr_index: u64) -> Result<Vec<u8>> {
         let td_report = Self::get_report()?;
-        let rtmr_index = Self::pcr_to_rtmr(pcr_index) as usize;
+        let ccmr = self.pcr_to_ccmr(pcr_index) as usize;
 
-        Ok(td_report.get_rtmr(rtmr_index))
+        Ok(td_report.get_rtmr(ccmr - 1))
+    }
+
+    fn pcr_to_ccmr(&self, pcr_index: u64) -> u64 {
+        // The match follows https://github.com/confidential-containers/td-shim/blob/main/doc/tdshim_spec.md#td-event-log
+        // and https://uefi.org/specs/UEFI/2.11/38_Confidential_Computing.html#intel-trust-domain-extension
+        match pcr_index {
+            1 | 7 => 1,
+            2..=6 => 2,
+            8..=15 => 3,
+            _ => 4,
+        }
+    }
+
+    fn ccel_hash_algorithm(&self) -> HashAlgorithm {
+        HashAlgorithm::Sha384
     }
 }
 

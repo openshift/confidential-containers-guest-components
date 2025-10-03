@@ -5,8 +5,7 @@
 
 use std::fs::File;
 use std::io::Write;
-use ttrpc_codegen::{Codegen, Customize, ProtobufCustomize};
-use utoipa::OpenApi;
+use utoipa::{OpenApi, ToSchema};
 
 #[utoipa::path(
     get,
@@ -46,6 +45,31 @@ fn _token() {}
 )]
 fn _evidence() {}
 
+#[derive(ToSchema)]
+pub struct AaelEvent {
+    /// Attestation Agent Event Log Domain
+    pub domain: String,
+
+    /// Attestation Agent Event Log Operation
+    pub operation: String,
+
+    /// Attestation Agent Event Log Content
+    pub content: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/aa/aael",
+    request_body = AaelEvent,
+    responses(
+        (status = 200, description = "success response"),
+        (status = 400, description = "bad request for invalid body"),
+        (status = 403, description = "forbid external access"),
+        (status = 405, description = "only POST method allowed")
+    )
+)]
+fn _aael() {}
+
 #[utoipa::path(
     get,
     path = "/cdh/resource/{repository}/{type}/{tag}",
@@ -72,7 +96,7 @@ fn generate_openapi_document() -> std::io::Result<()> {
         (url = "http://127.0.0.1:8006", description = "CoCo Restful API")
      ),
 
-    paths(_token, _evidence, _resource)
+    paths(_token, _evidence, _aael, _resource)
  )]
     struct ApiDoc;
     let mut file = File::create("openapi/api.json")?;
@@ -82,25 +106,6 @@ fn generate_openapi_document() -> std::io::Result<()> {
 }
 
 fn main() -> std::io::Result<()> {
-    let protos = vec![
-        "./protos/confidential_data_hub.proto",
-        "./protos/attestation_agent.proto",
-    ];
-    let protobuf_customized = ProtobufCustomize::default().gen_mod_rs(false);
-
-    Codegen::new()
-        .out_dir("src/ttrpc_proto")
-        .inputs(&protos)
-        .include("./protos")
-        .rust_protobuf()
-        .customize(Customize {
-            async_all: true,
-            ..Default::default()
-        })
-        .rust_protobuf_customize(protobuf_customized)
-        .run()
-        .expect("Generate ttrpc protocol code failed.");
-
     generate_openapi_document().expect("Generate restful OpenAPI yaml failed.");
 
     Ok(())

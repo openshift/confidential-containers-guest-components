@@ -7,13 +7,11 @@
 
 use anyhow::*;
 use async_trait::async_trait;
+use protos::ttrpc::cdh::{api::GetResourceRequest, api_ttrpc::GetResourceServiceClient};
 use tokio::sync::OnceCell;
 use ttrpc::context;
 
 use super::Client;
-
-use super::ttrpc_proto::getresource::GetResourceRequest;
-use super::ttrpc_proto::getresource_ttrpc::GetResourceServiceClient;
 
 const SOCKET_ADDR: &str = "unix:///run/confidential-containers/cdh.sock";
 
@@ -33,7 +31,7 @@ impl Client for Ttrpc {
         let res = self
             .client
             .get_or_try_init(|| async {
-                let inner = ttrpc::asynchronous::Client::connect(SOCKET_ADDR)?;
+                let inner = ttrpc::asynchronous::Client::connect(SOCKET_ADDR).await?;
                 Ok(GetResourceServiceClient::new(inner))
             })
             .await?

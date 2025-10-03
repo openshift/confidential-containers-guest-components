@@ -6,13 +6,13 @@
 use base64::Engine;
 use clap::{arg, command, Args, Parser, Subcommand};
 use const_format::concatcp;
-use ttrpc::context;
-use ttrpc_dep::ttrpc_protocol::{
+use protos::ttrpc::aa::{
     attestation_agent::{
         ExtendRuntimeMeasurementRequest, GetEvidenceRequest, GetTeeTypeRequest, GetTokenRequest,
     },
     attestation_agent_ttrpc::AttestationAgentServiceClient,
 };
+use ttrpc::context;
 
 mod ttrpc_dep;
 
@@ -97,8 +97,9 @@ struct ExtendRuntimeMeasurementArgs {
 #[tokio::main]
 pub async fn main() {
     let args = Cli::parse();
-    let inner =
-        ttrpc::asynchronous::Client::connect(&args.attestation_sock).expect("connect ttrpc socket");
+    let inner = ttrpc::asynchronous::Client::connect(&args.attestation_sock)
+        .await
+        .expect("connect ttrpc socket");
     let client = AttestationAgentServiceClient::new(inner);
     match args.operation {
         Operation::GetTee => {

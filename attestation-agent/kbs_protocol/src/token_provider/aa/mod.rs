@@ -9,11 +9,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use ttrpc::context;
 
-use crate::{
-    ttrpc_protos::{
-        attestation_agent::GetTokenRequest, attestation_agent_ttrpc::AttestationAgentServiceClient,
-    },
-    Error, Result, TeeKeyPair, Token,
+use crate::{Error, Result, TeeKeyPair, Token};
+use protos::ttrpc::aa::{
+    attestation_agent::GetTokenRequest, attestation_agent_ttrpc::AttestationAgentServiceClient,
 };
 
 use super::TokenProvider;
@@ -36,6 +34,7 @@ struct Message {
 impl AATokenProvider {
     pub async fn new() -> Result<Self> {
         let c = ttrpc::r#async::Client::connect(AA_SOCKET_FILE)
+            .await
             .map_err(|e| Error::AATokenProvider(format!("ttrpc connect failed {e:?}")))?;
         let client = AttestationAgentServiceClient::new(c);
         Ok(Self { client })
