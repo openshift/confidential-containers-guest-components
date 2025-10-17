@@ -69,3 +69,6 @@ ttrpc-codegen = "0.6.0"
 url = "2.5.4"
 uuid = "1"
 zeroize = "1.5.7"
+
+[patch.crates-io]
+base64ct = { git = "https://github.com/RustCrypto/formats", tag = "base64ct/v1.7.2" }
