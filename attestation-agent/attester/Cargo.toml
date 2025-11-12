@@ -26,7 +26,7 @@ log.workspace = true
 nvml-wrapper = { git = "https://github.com/rust-nvml/nvml-wrapper", rev="7e0752f331" , optional = true, default-features = false, features = ["serde"]}
 occlum_dcap = { git = "https://github.com/occlum/occlum", tag = "v0.29.7", optional = true }
 pv = { version = "0.10.0", package = "s390_pv", optional = true }
-scroll = { version = "=0.12.0", default-features = false, features = [
+scroll = { version = "0.13.0", default-features = false, features = [
     "derive",
     "std",
 ], optional = true }
