@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::{bail, Context};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use oci_client::{
     client::{Certificate, CertificateEncoding, ClientConfig, ClientProtocol},
     manifest::{OciDescriptor, OciImageManifest},
@@ -35,13 +35,7 @@ use crate::{
     signature::SignatureError,
 };
 
-#[cfg(feature = "snapshot-unionfs")]
-use crate::snapshots::occlum::unionfs::Unionfs;
-#[cfg(feature = "snapshot-overlayfs")]
 use crate::snapshots::overlay::OverlayFs;
-
-#[cfg(feature = "nydus")]
-use crate::nydus::{service, utils};
 
 pub type PullImageResult<T> = std::result::Result<T, PullImageError>;
 
@@ -91,13 +85,6 @@ pub enum PullImageError {
 
     #[error("Errors happened when pulling image: {0}")]
     PullLayersFailed(#[from] PullLayerError),
-
-    #[cfg(feature = "nydus")]
-    #[error("Failed to pull nydus image")]
-    NydusImagePullFailed {
-        #[source]
-        source: anyhow::Error,
-    },
 
     #[error("Internal error")]
     Internal {
@@ -163,6 +150,22 @@ pub struct ImageMeta {
     pub layer_metas: Vec<LayerMeta>,
 }
 
+/// The information of the pulled image.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageInfo {
+    /// The digest of the image configuration.
+    ///
+    /// See `config` of <https://github.com/opencontainers/image-spec/blob/main/manifest.md>
+    ///
+    /// Usually in form `sha256:xxxxxx`
+    pub config_digest: String,
+
+    /// The digest of the [image manifest](https://github.com/opencontainers/image-spec/blob/main/manifest.md)
+    ///
+    /// Usually in form `sha256:xxxxxx`
+    pub manifest_digest: String,
+}
+
 /// The`image-rs` client will support OCI image
 /// pulling, image signing verfication, image layer
 /// decryption/unpack/store and management.
@@ -207,25 +210,8 @@ impl ImageClient {
         _meta_store: &MetaStore,
     ) -> Box<dyn Snapshotter> {
         match snapshot {
-            #[cfg(feature = "snapshot-overlayfs")]
             SnapshotType::Overlay => {
-                let data_dir = work_dir.join(SnapshotType::Overlay.to_string());
-                let overlayfs = OverlayFs::new(data_dir);
-
-                Box::new(overlayfs) as Box<dyn Snapshotter>
-            }
-            #[cfg(feature = "snapshot-unionfs")]
-            SnapshotType::OcclumUnionfs => {
-                let occlum_unionfs_index = _meta_store
-                    .snapshot_db
-                    .get(&SnapshotType::OcclumUnionfs.to_string())
-                    .unwrap_or(&0);
-                let occlum_unionfs = Unionfs {
-                    data_dir: work_dir.join(SnapshotType::OcclumUnionfs.to_string()),
-                    index: std::sync::atomic::AtomicUsize::new(*occlum_unionfs_index),
-                };
-
-                Box::new(occlum_unionfs) as Box<dyn Snapshotter>
+                Box::new(OverlayFs::new(work_dir.to_path_buf())) as Box<dyn Snapshotter>
             }
         }
     }
@@ -254,7 +240,7 @@ impl ImageClient {
 
     /// pull_image pulls an image with optional auth info and decrypt config
     /// and store the pulled data under user defined work_dir/layers.
-    /// It will return the image ID with prepeared bundle: a rootfs directory,
+    /// It will return the image ID with prepared bundle: a rootfs directory,
     /// and config.json will be ready in the bundle_dir passed by user.
     ///
     /// If at least one of `security_validate` and `auth` in self.config is
@@ -270,7 +256,7 @@ impl ImageClient {
         bundle_dir: &Path,
         auth_info: &Option<&str>,
         decrypt_config: &Option<&str>,
-    ) -> PullImageResult<String> {
+    ) -> PullImageResult<ImageInfo> {
         let reference = Reference::try_from(image_url)
             .map_err(|source| PullImageError::IllegalImageReference { source })?;
 
@@ -313,7 +299,7 @@ impl ImageClient {
         bundle_dir: &Path,
         decrypt_config: &Option<&str>,
         image_url: &str,
-    ) -> PullImageResult<String> {
+    ) -> PullImageResult<ImageInfo> {
         // Try to find a valid registry auth. Logic order
         // 1. the input parameter
         // 2. from self.registry_auth
@@ -399,54 +385,16 @@ impl ImageClient {
 
         let id = image_manifest.config.digest.clone();
 
-        #[cfg(feature = "nydus")]
-        if utils::is_nydus_image(&image_manifest) {
-            {
-                let m = self.meta_store.read().await;
-                if let Some(image_data) = &m.image_db.get(&id) {
-                    return service::create_nydus_bundle(
-                        image_data,
-                        bundle_dir,
-                        &mut self.snapshot,
-                    )
-                    .map_err(|source| PullImageError::FailedToCreateBundle { source });
-                }
-            }
-
-            #[cfg(feature = "signature")]
-            if let Some(signature_validator) = &self.signature_validator {
-                signature_validator
-                    .check_image_signature(image_url, &image_digest, &auth)
-                    .await?;
-            }
-
-            let (mut image_data, _, _) = create_image_meta(
-                &id,
-                image_url,
-                &image_manifest,
-                &image_digest,
-                &image_config,
-            )
-            .map_err(|source| PullImageError::Internal { source })?;
-
-            return self
-                .do_pull_image_with_nydus(
-                    &mut client,
-                    &mut image_data,
-                    &image_manifest,
-                    decrypt_config,
-                    bundle_dir,
-                )
-                .await
-                .map_err(|source| PullImageError::NydusImagePullFailed { source });
-        }
-
         // If image has already been populated, just create the bundle.
         {
             let m = self.meta_store.read().await;
             if let Some(image_data) = &m.image_db.get(&id) {
-                return create_bundle(image_data, bundle_dir, &mut self.snapshot)
-                    .map_err(|source| PullImageError::FailedToCreateBundle { source });
+                let image_id = create_bundle(image_data, bundle_dir, &mut self.snapshot)
+                    .map_err(|source| PullImageError::FailedToCreateBundle { source })?;
+                return Ok(ImageInfo {
+                    config_digest: image_id.clone(),
+                    manifest_digest: image_digest.clone(),
+                });
             }
         }
 
@@ -493,6 +441,7 @@ impl ImageClient {
         let image_id = create_bundle(&image_data, bundle_dir, &mut self.snapshot)
             .map_err(|source| PullImageError::FailedToCreateBundle { source })?;
 
+        debug!("image id: {image_id}");
         self.meta_store
             .write()
             .await
@@ -511,71 +460,10 @@ impl ImageClient {
             .write_to_file(&meta_file)
             .context("update meta store failed")
             .map_err(|source| PullImageError::Internal { source })?;
-        Ok(image_id)
-    }
-
-    #[cfg(feature = "nydus")]
-    async fn do_pull_image_with_nydus(
-        &mut self,
-        client: &mut PullClient<'_>,
-        image_data: &mut ImageMeta,
-        image_manifest: &OciImageManifest,
-        decrypt_config: &Option<&str>,
-        bundle_dir: &Path,
-    ) -> anyhow::Result<String> {
-        let diff_ids = image_data.image_config.rootfs().diff_ids();
-        let bootstrap_id = if !diff_ids.is_empty() {
-            diff_ids[diff_ids.len() - 1].to_string()
-        } else {
-            bail!("Failed to get bootstrap id, diff_ids is empty");
-        };
-
-        let bootstrap = utils::get_nydus_bootstrap_desc(image_manifest)
-            .ok_or_else(|| anyhow::anyhow!("Faild to get bootstrap oci descriptor"))?;
-        let layer_metas = client
-            .pull_bootstrap(
-                bootstrap,
-                bootstrap_id.to_string(),
-                decrypt_config,
-                self.meta_store.clone(),
-            )
-            .await?;
-        image_data.layer_metas = vec![layer_metas];
-        let layer_db: HashMap<String, LayerMeta> = image_data
-            .layer_metas
-            .iter()
-            .map(|layer| (layer.compressed_digest.clone(), layer.clone()))
-            .collect();
-
-        self.meta_store.write().await.layer_db.extend(layer_db);
-
-        if image_data.layer_metas.is_empty() {
-            bail!("Failed to pull the bootstrap");
-        }
-
-        let reference = Reference::try_from(image_data.reference.clone())?;
-        let nydus_config = self
-            .config
-            .get_nydus_config()
-            .expect("Nydus configuration not found");
-        let work_dir = self.config.work_dir.clone();
-        let image_id = service::start_nydus_service(
-            image_data,
-            reference,
-            nydus_config,
-            &work_dir,
-            bundle_dir,
-            &mut self.snapshot,
-        )
-        .await?;
-
-        self.meta_store
-            .write()
-            .await
-            .image_db
-            .insert(image_data.id.clone(), image_data.clone());
-
-        Ok(image_id)
+        Ok(ImageInfo {
+            config_digest: image_id.clone(),
+            manifest_digest: image_digest.clone(),
+        })
     }
 }
 
@@ -653,7 +541,6 @@ fn create_bundle(
 }
 
 #[cfg(not(target_arch = "s390x"))]
-#[cfg(feature = "snapshot-overlayfs")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,40 +589,6 @@ mod tests {
         assert_eq!(
             image_client.meta_store.read().await.image_db.len(),
             oci_images.len()
-        );
-    }
-
-    #[cfg(feature = "nydus")]
-    #[tokio::test]
-    async fn test_nydus_image() {
-        let work_dir = tempfile::tempdir().unwrap();
-
-        let nydus_images = [
-            "eci-nydus-registry.cn-hangzhou.cr.aliyuncs.com/v6/java:latest-test_nydus",
-            //"eci-nydus-registry.cn-hangzhou.cr.aliyuncs.com/test/ubuntu:latest_nydus",
-            //"eci-nydus-registry.cn-hangzhou.cr.aliyuncs.com/test/python:latest_nydus",
-        ];
-
-        let mut image_client = ImageClient::new(work_dir.path().to_path_buf());
-
-        for image in nydus_images.iter() {
-            let bundle_dir = tempfile::tempdir().unwrap();
-
-            assert_retry!(
-                5,
-                1,
-                image_client,
-                pull_image,
-                image,
-                bundle_dir.path(),
-                &None,
-                &None
-            );
-        }
-
-        assert_eq!(
-            image_client.meta_store.read().await.image_db.len(),
-            nydus_images.len()
         );
     }
 
