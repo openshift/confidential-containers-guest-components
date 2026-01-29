@@ -37,13 +37,18 @@ jobs:
           - ubuntu-24.04-arm
     runs-on: ${{ matrix.instance }}
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
       - name: Code checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           fetch-depth: 1
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@1780873c7b576612439a134613cc4cc74ce5538c # v1.15.2
         with:
           components: rustfmt, clippy
 
@@ -81,8 +86,7 @@ jobs:
 
       - name: Run rust lint check (x86_64 only)
         run: |
-            cargo clippy -p image-rs --all-targets --features=enclave-cc-cckbc-native-tls --no-default-features -- -D warnings
-            cargo clippy -p image-rs --all-targets --features=kata-cc-native-tls,nydus --no-default-features -- -D warnings
+            cargo clippy -p image-rs --all-targets --features=kata-cc-native-tls --no-default-features -- -D warnings
         if: matrix.instance == 'ubuntu-24.04'
 
       - name: Run cargo build
@@ -99,11 +103,11 @@ jobs:
 
       - name: Run cargo test - kata-cc (rust-tls version) with keywrap-grpc + keywrap-jwe
         run: |
-          sudo -E PATH=$PATH -s cargo test -p image-rs --no-default-features --features=encryption-ring,keywrap-grpc,snapshot-overlayfs,signature-cosign-rustls,signature-simple,kbs,oci-client/rustls-tls,keywrap-jwe
+          sudo -E PATH=$PATH -s cargo test -p image-rs --no-default-features --features=encryption-ring,keywrap-grpc,signature-cosign-rustls,signature-simple,kbs,oci-client/rustls-tls,keywrap-jwe
 
       - name: Run cargo test - kata-cc (native-tls version) with keywrap-grpc + keywrap-jwe
         run: |
-          sudo -E PATH=$PATH -s cargo test -p image-rs --no-default-features --features=encryption-openssl,keywrap-grpc,snapshot-overlayfs,signature-cosign-native,signature-simple,kbs,oci-client/native-tls,keywrap-jwe
+          sudo -E PATH=$PATH -s cargo test -p image-rs --no-default-features --features=encryption-openssl,keywrap-grpc,signature-cosign-native,signature-simple,kbs,oci-client/native-tls,keywrap-jwe
 
       - name: Run cargo test - kata-cc (rust-tls version) with keywrap-ttrpc (default) + keywrap-jwe
         run: |
@@ -122,8 +126,3 @@ jobs:
           AUTH_PASSWORD: ${{ secrets.SH_ICR_API_KEY }}
         run: |
           sudo -E PATH=$PATH -s cargo test -p image-rs --no-default-features --features=kata-cc-native-tls,keywrap-jwe,signature-simple-xrss
-
-      - name: Run cargo test - kata-cc (native-tls version) with keywrap-ttrpc (default) + keywrap-jwe + nydus
-        run: |
-          sudo -E PATH=$PATH -s cargo test -p image-rs --no-default-features --features=kata-cc-native-tls,keywrap-jwe,nydus
-        if: ${{ startsWith(matrix.instance, 'ubuntu-24.04') }}

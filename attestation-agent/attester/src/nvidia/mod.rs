@@ -78,14 +78,15 @@ impl Attester for NvAttester {
                 .uuid()
                 .context("Failed to get UUID for device {index}")?;
 
+            let evidence = &report.attestation_report[..report.attestation_report_size as usize];
+            let cert_chain = &certificate.attestation_cert_chain
+                [..certificate.attestation_cert_chain_size as usize];
+
             device_evidence_list.push(NvDeviceReportAndCert {
                 arch: dev_arch,
                 uuid: dev_uuid,
-                // NRAS expects hex as the encoding for the report so it's used
-                // here instead of base64. With that, the relying parties that
-                // use this evidence with NRAS do not have to re-encode it.
-                evidence: hex::encode(report.attestation_report),
-                certificate: STANDARD.encode(certificate.attestation_cert_chain),
+                evidence: STANDARD.encode(evidence),
+                certificate: STANDARD.encode(cert_chain),
             });
 
             device

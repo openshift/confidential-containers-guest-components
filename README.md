@@ -17,7 +17,7 @@ Rust implementation of the container image management library.
 Rust implementation of the OCI image encryption library.
 
 [api-server-rest](api-server-rest)
-CoCo Restful API server.
+CoCo RESTful API server.
 
 [confidential-data-hub](confidential-data-hub)
 Confidential Data Hub.
@@ -57,7 +57,6 @@ The `TEE_PLATFORM` parameter can be
 - `fs`: for platforms with encrypted root filesystems (i.e. s390x)
 - `tdx`: for Intel TDX
 - `az-tdx-vtpm`: for Intel TDX with Azure vTPM
-- `sev`: for AMD SEV(-ES)
 - `snp`: for AMD SEV-SNP
 - `amd`: for both AMD SEV(-ES) and AMD SEV-SNP
 - `az-snp-vtpm`: for AMD SEV-SNP with Azure vTPM

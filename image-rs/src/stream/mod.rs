@@ -30,7 +30,7 @@ pub enum StreamError {
     #[error("Unsupported uncompressed digest format: {0}")]
     UnsupportedDigestFormat(String),
 
-    #[error("Failed to unpack layer")]
+    #[error("Failed to unpack layer: {0}")]
     UnPackLayerFailed(#[from] UnpackError),
 }
 
@@ -94,7 +94,7 @@ pub async fn stream_processing(
 }
 
 async fn async_processing(
-    layer_reader: (impl AsyncRead + Unpin),
+    layer_reader: impl AsyncRead + Unpin,
     hasher: LayerDigestHasher,
     destination: PathBuf,
 ) -> StreamResult<String> {
