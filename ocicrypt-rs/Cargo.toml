@@ -20,7 +20,7 @@ ctr = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 josekit = { version = ">=0.7", optional = true }
 kbc = { path = "../attestation-agent/kbc", default-features = false, optional = true }
-openssl = { workspace = true, optional = true }
+openssl = { workspace = true, features = ["vendored"], optional = true }
 pin-project-lite = { version = "0.2.16", optional = true }
 protos = { path = "../protos", default-features = false, optional = true }
 resource_uri = { path = "../attestation-agent/deps/resource_uri", optional = true }
@@ -38,7 +38,7 @@ zeroize = { workspace = true, optional = true }
 [dev-dependencies]
 aes-gcm.workspace = true
 ctrlc = { version = "3.5", features = ["termination"] }
-openssl = { workspace = true }
+openssl = { workspace = true, features = ["vendored"] }
 tokio = { workspace = true, features = ["time", "signal"] }
 
 [features]
