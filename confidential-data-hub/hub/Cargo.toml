@@ -40,21 +40,29 @@ base64.workspace = true
 cfg-if.workspace = true
 clap = { workspace = true, features = ["derive"], optional = true }
 config = { workspace = true }
+const_format.workspace = true
 crypto.path = "../../attestation-agent/deps/crypto"
-env_logger = { workspace = true, optional = true }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
 image-rs = { path = "../../image-rs", default-features = false, features = [
     "kata-cc-rustls-tls",
 ] }
+jose-b64 = "0.1.2"
+jose-jwa = "0.1.2"
+jose-jwk = "0.1.2"
+jose-jws = "0.1.2"
 kms = { path = "../kms", default-features = false }
-log.workspace = true
+nix.workspace = true
+p256 = "0.13.2"
 prost = { workspace = true, optional = true }
 protos = { path = "../../protos", default-features = false, optional = true }
 rand.workspace = true
 resource_uri.path = "../../attestation-agent/deps/resource_uri"
 serde.workspace = true
 serde_json.workspace = true
+shadow-rs = { workspace = true, optional = true }
 strum = { workspace = true, features = ["derive"] }
-tempfile = { workspace = true, optional = true }
+tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = [
     "fs",
@@ -66,10 +74,13 @@ tokio = { workspace = true, features = [
 ] }
 tonic = { workspace = true, optional = true }
 ttrpc = { workspace = true, features = ["async"], optional = true }
+uuid = { workspace = true, features = ["fast-rng", "v4"] }
+which = "8.0.2"
 zeroize.workspace = true
 
 [build-dependencies]
 anyhow.workspace = true
+shadow-rs.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
@@ -84,7 +95,7 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 default = ["aliyun", "kbs", "bin", "ttrpc", "grpc", "cli"]
 
 # support aliyun stacks (KMS, ..)
-aliyun = ["tempfile", "kms/aliyun"]
+aliyun = ["kms/aliyun"]
 
 # support coco-KBS to provide confidential resources
 kbs = ["kms/kbs"]
@@ -96,7 +107,7 @@ sev = ["kms/sev"]
 ehsm = []
 
 # Binary RPC type
-bin = ["clap", "env_logger"]
+bin = ["clap", "shadow-rs", "tracing-subscriber"]
 ttrpc = ["dep:ttrpc", "tokio/signal", "protos/ttrpc"]
 grpc = ["prost", "tonic", "tokio/signal", "protos/grpc"]
 

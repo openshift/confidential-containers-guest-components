@@ -10,14 +10,14 @@ use std::{collections::HashMap, os::unix::fs::PermissionsExt};
 
 use anyhow::Context;
 use async_trait::async_trait;
-use log::{debug, error};
-use rand::{distr::Alphanumeric, Rng};
+use rand::{distr::Alphanumeric, RngExt};
 use serde::{Deserialize, Serialize};
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncWriteExt},
     process::Command,
 };
+use tracing::{debug, error};
 
 use crate::secret;
 use error::{AliyunError, Result};
@@ -256,7 +256,7 @@ impl SecureMount for Oss {
     ///
     /// This is a wrapper for inner function to convert error type.
     async fn mount(
-        &self,
+        &mut self,
         options: &HashMap<String, String>,
         flags: &[String],
         mount_point: &str,

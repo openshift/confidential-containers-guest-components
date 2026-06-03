@@ -5,11 +5,14 @@
 
 use std::{collections::HashMap, path::Path};
 
+/// Base directory for CDH runtime data.
+pub(crate) const CDH_BASE_DIR: &str = "/run/confidential-containers/cdh";
+
 use async_trait::async_trait;
 use image_rs::{builder::ClientBuilder, config::ImageConfig, image::ImageClient};
 use kms::{Annotations, ProviderSettings};
-use log::{debug, info, warn};
 use tokio::sync::{Mutex, OnceCell};
+use tracing::{debug, info, warn};
 
 #[cfg(feature = "ttrpc")]
 use protos::ttrpc::aa::attestation_agent::{

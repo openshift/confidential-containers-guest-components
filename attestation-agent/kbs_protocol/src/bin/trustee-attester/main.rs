@@ -9,16 +9,23 @@ use anyhow::Result;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use clap::{Parser, Subcommand};
-use log::debug;
+use shadow_rs::{formatcp, shadow};
 use std::fs;
 use std::path::PathBuf;
+use tracing::debug;
+use tracing_subscriber::{fmt::Subscriber, EnvFilter};
 
 use kbs_protocol::evidence_provider::NativeEvidenceProvider;
 use kbs_protocol::KbsClientBuilder;
 use kbs_protocol::KbsClientCapabilities;
 use kbs_protocol::ResourceUri;
 
+shadow!(build);
+
+const CLI_VERSION: &str = formatcp!("{}-{}", build::LAST_TAG, build::SHORT_COMMIT);
+
 #[derive(Parser)]
+#[command(version = CLI_VERSION)]
 struct Cli {
     /// Trustee URL of format <protocol>://<host>:<port>
     #[clap(long, value_parser)]
@@ -50,7 +57,12 @@ enum Commands {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+    let env_filter = match std::env::var_os("RUST_LOG") {
+        Some(_) => EnvFilter::try_from_default_env().expect("RUST_LOG is present but invalid"),
+        None => EnvFilter::new("info"),
+    };
+
+    Subscriber::builder().with_env_filter(env_filter).init();
 
     let cli = Cli::parse();
 

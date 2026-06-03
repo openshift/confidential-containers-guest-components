@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-use std::{env, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use confidential_data_hub::CdhConfig;
-use log::info;
+use const_format::concatcp;
+use tracing::{debug, info};
 
 use protos::ttrpc::cdh::{
     api_ttrpc::{
@@ -17,22 +17,36 @@ use protos::ttrpc::cdh::{
     },
     keyprovider_ttrpc::create_key_provider_service,
 };
+use shadow_rs::shadow;
 use tokio::{
     fs,
     signal::unix::{signal, SignalKind},
 };
+use tracing_subscriber::{fmt::Subscriber, EnvFilter};
 use ttrpc::r#async::Server as TtrpcServer;
 use ttrpc_server::Server;
 
+shadow!(build);
+
+mod config;
 mod message;
 mod ttrpc_server;
 
 const UNIX_SOCKET_PREFIX: &str = "unix://";
 
-const VERSION: &str = include_str!(concat!(env!("OUT_DIR"), "/version"));
+const FEATURE_INFO: &str = include_str!(concat!(env!("OUT_DIR"), "/version"));
+const DIRTY_SUFFIX: &str = if build::GIT_CLEAN { "" } else { " (dirty)" };
+const VERSION: &str = concatcp!(
+    build::LAST_TAG,
+    "-",
+    build::SHORT_COMMIT,
+    DIRTY_SUFFIX,
+    "\n",
+    FEATURE_INFO,
+);
 
 #[derive(Debug, Parser)]
-#[command(author, version = Some(VERSION))]
+#[command(author, version = VERSION)]
 struct Cli {
     /// Path to the config  file
     ///
@@ -43,10 +57,38 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
     let cli = Cli::parse();
 
-    let config = CdhConfig::new(cli.config)?;
+    let (config, config_log) = config::read_config(cli.config).context("failed to read config")?;
+
+    let env_filter = match std::env::var_os("RUST_LOG") {
+        Some(_) => EnvFilter::try_from_default_env().context("RUST_LOG is present but invalid")?,
+        None => EnvFilter::try_new(&config.log.level)
+            .context(format!("Invalid log level: {}", config.log.level))?,
+    };
+
+    let version = format!(
+        r"
+ _____                 __  _      _               _    _         _   ______        _            _   _         _     
+/  __ \               / _|(_)    | |             | |  (_)       | |  |  _  \      | |          | | | |       | |    
+| /  \/  ___   _ __  | |_  _   __| |  ___  _ __  | |_  _   __ _ | |  | | | | __ _ | |_  __ _   | |_| | _   _ | |__  
+| |     / _ \ | '_ \ |  _|| | / _` | / _ \| '_ \ | __|| | / _` || |  | | | |/ _` || __|/ _` |  |  _  || | | || '_ \ 
+| \__/\| (_) || | | || |  | || (_| ||  __/| | | || |_ | || (_| || |  | |/ /| (_| || |_| (_| |  | | | || |_| || |_) |
+ \____/ \___/ |_| |_||_|  |_| \__,_| \___||_| |_| \__||_| \__,_||_|  |___/  \__,_| \__|\__,_|  \_| |_/ \__,_||_.__/ 
+                                                                                                                                                                                         
+version: {VERSION}
+buildtime: {}
+loglevel: {env_filter}
+rpc: ttrpc
+",
+        build::BUILD_TIME,
+    );
+
+    Subscriber::builder().with_env_filter(env_filter).init();
+
+    info!("Welcome to Confidential Containers Confidential Data Hub (ttRPC version)!\n\n{version}");
+    info!("{config_log}");
+    debug!(config = ?config, "Using config");
 
     let unix_socket_path = config
         .socket

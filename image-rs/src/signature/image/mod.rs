@@ -9,9 +9,9 @@ use oci_client::Reference;
 pub mod digest;
 
 use digest::Digest;
-use strum::{Display, EnumString};
+use strum::Display;
 
-#[derive(EnumString, Display, Debug, PartialEq, Eq)]
+#[derive(Display, Debug, PartialEq, Eq)]
 pub enum TransportName {
     #[strum(to_string = "docker")]
     Docker,
@@ -24,6 +24,7 @@ pub struct Image {
     pub reference: Reference,
     // digest format: "digest-algorithm:digest-value"
     pub manifest_digest: Digest,
+    pub manifest_list_digest: Option<Digest>,
 }
 
 impl Image {
@@ -31,6 +32,7 @@ impl Image {
         Image {
             reference: image_ref,
             manifest_digest: Digest::default(),
+            manifest_list_digest: None,
         }
     }
 
@@ -44,6 +46,11 @@ impl Image {
 
     pub fn set_manifest_digest(&mut self, digest: &str) -> Result<()> {
         self.manifest_digest = Digest::try_from(digest)?;
+        Ok(())
+    }
+
+    pub fn set_manifest_list_digest(&mut self, digest: &str) -> Result<()> {
+        self.manifest_list_digest = Some(Digest::try_from(digest)?);
         Ok(())
     }
 }

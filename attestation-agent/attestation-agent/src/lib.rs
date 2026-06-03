@@ -15,11 +15,13 @@ pub use attester::InitDataResult;
 pub mod config;
 mod eventlog;
 pub mod initdata;
+
+#[allow(unreachable_code)]
 pub mod token;
 
 use eventlog::EventLog;
-use log::{debug, info, warn};
 use token::*;
+use tracing::{debug, info};
 
 use crate::{config::Config, eventlog::Event};
 
@@ -53,9 +55,10 @@ pub enum RuntimeMeasurement {
 /// ```no_run
 /// use attestation_agent::AttestationAgent;
 /// use attestation_agent::AttestationAPIs;
+/// use attestation_agent::config::Config;
 ///
 /// // initialize with empty config
-/// let mut aa = AttestationAgent::new(None).unwrap();
+/// let mut aa = AttestationAgent::new(Config::default()).unwrap();
 ///
 /// let _quote = aa.get_evidence(&[0;64]);
 /// ```
@@ -90,6 +93,8 @@ pub trait AttestationAPIs {
     async fn bind_init_data(&self, init_data: &[u8]) -> Result<InitDataResult>;
 
     fn get_tee_type(&self) -> Tee;
+
+    fn get_additional_tees(&self) -> Vec<Tee>;
 }
 
 /// Attestation agent to provide attestation service.
@@ -119,18 +124,7 @@ impl AttestationAgent {
     }
 
     /// Create a new instance of [AttestationAgent].
-    pub fn new(config_path: Option<&str>) -> Result<Self> {
-        let config = match config_path {
-            Some(config_path) => {
-                info!("Using AA config file: {config_path}");
-                Config::try_from(config_path)?
-            }
-            None => {
-                warn!("No AA config file specified. Using a default configuration and the kbs address will be read from kernel cmdline.");
-                Config::default_with_kernel_cmdline()
-            }
-        };
-        debug!("Using config: {config:#?}");
+    pub fn new(config: Config) -> Result<Self> {
         let config = RwLock::new(config);
 
         let primary_tee = detect_tee_type();
@@ -278,5 +272,9 @@ impl AttestationAPIs for AttestationAgent {
     /// `Sample` will be returned.
     fn get_tee_type(&self) -> Tee {
         self.primary_tee
+    }
+
+    fn get_additional_tees(&self) -> Vec<Tee> {
+        self.additional_attesters.keys().cloned().collect()
     }
 }

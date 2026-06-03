@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package api;
 
-option go_package = "github.com/confidential-containers/guest-components/confidential-data-hub/golang/pkg/api/cdhapi";
-
 message UnsealSecretInput {
     // The input `secret`` is in the following format
     // `sealed`.`JWS header`.`JWS body (secret content)`.`signature`
@@ -29,9 +27,7 @@ message SecureMountRequest {
     string mount_point = 4;
 }
 
-message SecureMountResponse {
-    string mount_path = 1;
-}
+message SecureMountResponse {}
 
 message ImagePullRequest {
     string image_url = 1;
