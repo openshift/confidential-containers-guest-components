@@ -80,7 +80,7 @@ target_include_directories(own-jwt-cpp
 # but it should work with c++14 also. so disable this warning.
 target_compile_options(own-jwt-cpp INTERFACE -Wno-c++17-extensions)
 
-FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz EXCLUDE_FROM_ALL)
+FetchContent_Declare(json SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/json EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(json)
 
 # Build fmt and spdlog as static libraries with PIC (needed for linking into shared libs)
