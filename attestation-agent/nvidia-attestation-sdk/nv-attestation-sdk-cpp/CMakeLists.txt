@@ -107,8 +107,7 @@ set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "Use external fmt library" FORCE)
 set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "Build spdlog as static library" FORCE)
 FetchContent_Declare(
   spdlog
-  GIT_REPOSITORY https://github.com/gabime/spdlog.git
-  GIT_TAG v1.14.1
+  SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/spdlog
   EXCLUDE_FROM_ALL
 )
 FetchContent_MakeAvailable(spdlog)
