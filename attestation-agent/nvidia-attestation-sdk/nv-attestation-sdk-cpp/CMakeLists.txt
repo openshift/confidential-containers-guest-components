@@ -183,43 +183,8 @@ ExternalProject_Add(xmlsec_external
 
 set(XMLSEC_ROOT "${XMLSEC_INSTALL_DIR}" CACHE PATH "xmlsec installation directory" FORCE)
 
-# Build libcurl statically — RHEL8 ships 7.61 but the code needs the URL API (>= 7.62)
-set(CURL_INSTALL_DIR "${CMAKE_BINARY_DIR}/curl-install")
-
-ExternalProject_Add(curl_external
-  DEPENDS openssl_external
-  URL https://github.com/curl/curl/releases/download/curl-7_88_1/curl-7.88.1.tar.gz
-  URL_HASH SHA256=cdb38b72e36bc5d33d5b8810f8018ece1baa29a8f215b4495e495ded82bbf3c7
-  CONFIGURE_COMMAND <SOURCE_DIR>/configure
-    --prefix=${CURL_INSTALL_DIR}
-    --with-openssl=${OPENSSL_INSTALL_DIR}
-    --without-libssh2
-    --without-nghttp2
-    --without-brotli
-    --without-zstd
-    --without-libidn2
-    --without-librtmp
-    --without-libpsl
-    --disable-ldap
-    --disable-shared
-    --enable-static
-    "CC=${_EP_CC}"
-    "CFLAGS=${_EP_CFLAGS}"
-    "PKG_CONFIG_PATH=${OPENSSL_INSTALL_DIR}/lib/pkgconfig"
-  BUILD_COMMAND make -j${CMAKE_BUILD_PARALLEL_LEVEL}
-  INSTALL_COMMAND make install
-  BUILD_IN_SOURCE 1
-)
-
-set(CURL_INCLUDE_DIR "${CURL_INSTALL_DIR}/include")
-file(MAKE_DIRECTORY "${CURL_INCLUDE_DIR}")
-
-add_library(CURL::libcurl STATIC IMPORTED)
-set_target_properties(CURL::libcurl PROPERTIES
-  IMPORTED_LOCATION "${CURL_INSTALL_DIR}/lib/libcurl.a"
-  INTERFACE_INCLUDE_DIRECTORIES "${CURL_INCLUDE_DIR}"
-  INTERFACE_LINK_LIBRARIES "OpenSSL::SSL;OpenSSL::Crypto;z;pthread"
-)
+# Use system curl (>= 7.62 required for URL API)
+find_package(CURL REQUIRED)
 
 find_package(LibXml2 REQUIRED)
 find_package(xmlsec REQUIRED)
@@ -341,7 +306,7 @@ target_link_libraries(nvat
 )
 
 # Ensure dependencies are built before nvat
-add_dependencies(nvat regorus_ffi spdlog fmt curl_external xmlsec_external openssl_external)
+add_dependencies(nvat regorus_ffi spdlog fmt xmlsec_external openssl_external)
 
 # todo (p0): remove cmake configuration helpers
 install(TARGETS nvat
