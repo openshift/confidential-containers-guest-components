@@ -37,14 +37,7 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-FetchContent_Declare(
-    Corrosion
-    GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git
-    # Use a tag that has a fix for https://github.com/corrosion-rs/corrosion/issues/590
-    GIT_TAG 6be991bb34c348dfb8344be22f3606288ea5c7fd
-    EXCLUDE_FROM_ALL
-)
-FetchContent_MakeAvailable(Corrosion)
+add_subdirectory(vendor/corrosion EXCLUDE_FROM_ALL)
 
 FetchContent_Declare(
   regorus
