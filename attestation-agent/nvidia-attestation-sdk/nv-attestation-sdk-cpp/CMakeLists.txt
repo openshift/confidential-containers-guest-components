@@ -96,8 +96,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(FMT_INSTALL OFF CACHE BOOL "Don't install fmt headers" FORCE)
 FetchContent_Declare(
   fmt
-  GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-  GIT_TAG 10.2.1
+  SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/fmt
   EXCLUDE_FROM_ALL
 )
 FetchContent_MakeAvailable(fmt)
