@@ -4458,15 +4458,15 @@ dependencies = [
 [[package]]
 name = "nv-attestation-sdk"
 version = "1.2.0"
-source = "git+https://github.com/NVIDIA/attestation-sdk?tag=2026.03.02#0c1be386a8fbb8f2766a6a556d10df86f5fed9d3"
 dependencies = [
+ "env_logger",
+ "log",
  "nv-attestation-sdk-sys",
 ]
 
 [[package]]
 name = "nv-attestation-sdk-sys"
 version = "1.2.0"
-source = "git+https://github.com/NVIDIA/attestation-sdk?tag=2026.03.02#0c1be386a8fbb8f2766a6a556d10df86f5fed9d3"
 dependencies = [
  "bindgen 0.72.1",
 ]

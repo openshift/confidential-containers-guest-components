@@ -1,12 +1,12 @@
 [package]
 name = "nv-attestation-sdk-sys"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+version = "1.2.0"
+edition = "2021"
+authors = ["NVIDIA Corporation"]
+license = "Apache-2.0"
+repository = "https://github.com/NVIDIA/attestation-sdk/nv-attestation-sdk-rust"
+keywords = ["nvidia", "attestation", "security", "gpu"]
+categories = ["api-bindings", "hardware-support"]
 description = "Raw FFI bindings for the NVIDIA Attestation SDK"
 documentation = "https://docs.nvidia.com/attestation/nv-attestation-sdk-rust/latest/overview.html"
 links = "nvat"
