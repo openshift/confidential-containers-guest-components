@@ -41,8 +41,7 @@ add_subdirectory(vendor/corrosion EXCLUDE_FROM_ALL)
 
 FetchContent_Declare(
   regorus
-  GIT_REPOSITORY https://github.com/microsoft/regorus.git
-  GIT_TAG regorus-v0.4.0
+  SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/regorus
 )
 FetchContent_MakeAvailable(regorus)
 

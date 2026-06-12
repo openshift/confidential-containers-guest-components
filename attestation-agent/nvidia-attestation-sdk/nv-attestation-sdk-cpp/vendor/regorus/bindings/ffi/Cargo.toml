@@ -1,0 +1,26 @@
+[workspace]
+
+[package]
+name = "regorus-ffi"
+version = "0.2.2"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+anyhow = "1.0"
+regorus = { path  = "../..", default-features = false }
+serde_json = "=1.0.149"
+
+[features]
+default = ["ast", "std", "coverage", "regorus/arc", "regorus/full-opa"]
+ast = ["regorus/ast"]
+std = ["regorus/std"]
+coverage = ["regorus/coverage"]
+custom_allocator = []
+
+[build-dependencies]
+cbindgen = "0.28.0"
+csbindgen = "=1.9.3"
