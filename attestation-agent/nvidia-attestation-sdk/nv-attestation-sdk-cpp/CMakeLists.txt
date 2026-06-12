@@ -62,8 +62,7 @@ set(JWT_BUILD_EXAMPLES OFF CACHE BOOL "Disable building jwt-cpp examples")
 
 FetchContent_Declare(
   jwt-cpp
-  GIT_REPOSITORY https://github.com/Thalhammer/jwt-cpp.git
-  GIT_TAG v0.7.1
+  SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/jwt-cpp
   EXCLUDE_FROM_ALL
 )
 
