@@ -154,34 +154,8 @@ set_target_properties(OpenSSL::SSL PROPERTIES
   INTERFACE_LINK_LIBRARIES "OpenSSL::Crypto"
 )
 
-# Build xmlsec 1.2.39 statically (depends on OpenSSL 3)
-set(XMLSEC_INSTALL_DIR "${CMAKE_BINARY_DIR}/xmlsec-install")
-
-ExternalProject_Add(xmlsec_external
-  DEPENDS openssl_external
-  URL https://github.com/lsh123/xmlsec/releases/download/xmlsec-1_2_39/xmlsec1-1.2.39.tar.gz
-  URL_HASH SHA256=15f2f55ea5968e578fcd24b3b427e553876c86c147dc7f03923e98fc2768a1fa
-  CONFIGURE_COMMAND <SOURCE_DIR>/configure
-    --prefix=${XMLSEC_INSTALL_DIR}
-    --disable-shared
-    --enable-static
-    --disable-crypto-dl
-    --with-openssl=${OPENSSL_INSTALL_DIR}
-    --without-gnutls
-    --without-nss
-    --without-gcrypt
-    --with-libxslt=no
-    --disable-docs
-    --disable-apps
-    "CC=${_EP_CC}"
-    "CFLAGS=${_EP_CFLAGS}"
-    "PKG_CONFIG_PATH=${OPENSSL_INSTALL_DIR}/lib/pkgconfig"
-  BUILD_COMMAND make -j${CMAKE_BUILD_PARALLEL_LEVEL}
-  INSTALL_COMMAND make install
-  BUILD_IN_SOURCE 1
-)
-
-set(XMLSEC_ROOT "${XMLSEC_INSTALL_DIR}" CACHE PATH "xmlsec installation directory" FORCE)
+# Use system xmlsec1 (>= 1.2.39 required)
+find_package(xmlsec REQUIRED)
 
 # Use system curl (>= 7.62 required for URL API)
 find_package(CURL REQUIRED)
@@ -306,7 +280,7 @@ target_link_libraries(nvat
 )
 
 # Ensure dependencies are built before nvat
-add_dependencies(nvat regorus_ffi spdlog fmt xmlsec_external openssl_external)
+add_dependencies(nvat regorus_ffi spdlog fmt openssl_external)
 
 # todo (p0): remove cmake configuration helpers
 install(TARGETS nvat

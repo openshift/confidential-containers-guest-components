@@ -5,10 +5,15 @@ if(NOT XMLSEC_ROOT)
   message(FATAL_ERROR "XMLSEC_ROOT must be set to the xmlsec installation directory")
 endif()
 
-# Set expected paths - files won't exist at configure time (ExternalProject builds later)
-set(xmlsec_INCLUDE_DIR "${XMLSEC_ROOT}/include/xmlsec1")
-set(xmlsec_LIBRARY "${XMLSEC_ROOT}/lib/libxmlsec1.a")
-set(xmlsec_OPENSSL_LIBRARY "${XMLSEC_ROOT}/lib/libxmlsec1-openssl.a")
+find_path(xmlsec_INCLUDE_DIR xmlsec/xmlsec.h
+  HINTS ${XMLSEC_ROOT}/include/xmlsec1 ${XMLSEC_ROOT}/include
+  NO_DEFAULT_PATH)
+find_library(xmlsec_LIBRARY NAMES xmlsec1
+  HINTS ${XMLSEC_ROOT}/lib ${XMLSEC_ROOT}/lib64
+  NO_DEFAULT_PATH)
+find_library(xmlsec_OPENSSL_LIBRARY NAMES xmlsec1-openssl
+  HINTS ${XMLSEC_ROOT}/lib ${XMLSEC_ROOT}/lib64
+  NO_DEFAULT_PATH)
 
 file(MAKE_DIRECTORY "${xmlsec_INCLUDE_DIR}")
 
@@ -36,7 +41,7 @@ if(xmlsec_FOUND)
   )
 
   if(NOT TARGET xmlsec::xmlsec)
-    add_library(xmlsec::xmlsec STATIC IMPORTED)
+    add_library(xmlsec::xmlsec UNKNOWN IMPORTED)
     set_target_properties(xmlsec::xmlsec PROPERTIES
       IMPORTED_LOCATION "${xmlsec_LIBRARY}"
       INTERFACE_INCLUDE_DIRECTORIES "${xmlsec_INCLUDE_DIR}"
@@ -46,7 +51,7 @@ if(xmlsec_FOUND)
   endif()
 
   if(NOT TARGET xmlsec::xmlsec-openssl)
-    add_library(xmlsec::xmlsec-openssl STATIC IMPORTED)
+    add_library(xmlsec::xmlsec-openssl UNKNOWN IMPORTED)
     set_target_properties(xmlsec::xmlsec-openssl PROPERTIES
       IMPORTED_LOCATION "${xmlsec_OPENSSL_LIBRARY}"
       INTERFACE_INCLUDE_DIRECTORIES "${xmlsec_INCLUDE_DIR}"
