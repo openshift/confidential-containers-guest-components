@@ -116,43 +116,8 @@ FetchContent_MakeAvailable(spdlog)
 set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_SAVED})
 set(CMAKE_POSITION_INDEPENDENT_CODE ${CMAKE_POSITION_INDEPENDENT_CODE_SAVED})
 
-set(_EP_CC "${CMAKE_C_COMPILER}")
-set(_EP_CFLAGS "${CMAKE_C_FLAGS} -fPIC")
-
-# Build OpenSSL statically — RHEL8 ships 1.1.1 but the code needs 3.x APIs
-set(OPENSSL_INSTALL_DIR "${CMAKE_BINARY_DIR}/openssl-install")
-
-ExternalProject_Add(openssl_external
-  URL https://github.com/openssl/openssl/releases/download/openssl-3.6.1/openssl-3.6.1.tar.gz
-  URL_HASH SHA256=b1bfedcd5b289ff22aee87c9d600f515767ebf45f77168cb6d64f231f518a82e
-  CONFIGURE_COMMAND <SOURCE_DIR>/Configure
-    "CC=${_EP_CC}"
-    "CFLAGS=${_EP_CFLAGS}"
-    --prefix=${OPENSSL_INSTALL_DIR}
-    --openssldir=${OPENSSL_INSTALL_DIR}
-    --libdir=lib
-    no-shared
-  BUILD_COMMAND make -j${CMAKE_BUILD_PARALLEL_LEVEL}
-  INSTALL_COMMAND make install_sw install_ssldirs
-  BUILD_IN_SOURCE 1
-)
-
-set(OPENSSL_INCLUDE_DIR "${OPENSSL_INSTALL_DIR}/include")
-file(MAKE_DIRECTORY "${OPENSSL_INCLUDE_DIR}")
-
-add_library(OpenSSL::Crypto STATIC IMPORTED)
-set_target_properties(OpenSSL::Crypto PROPERTIES
-  IMPORTED_LOCATION "${OPENSSL_INSTALL_DIR}/lib/libcrypto.a"
-  INTERFACE_INCLUDE_DIRECTORIES "${OPENSSL_INCLUDE_DIR}"
-  INTERFACE_LINK_LIBRARIES "dl;pthread"
-)
-
-add_library(OpenSSL::SSL STATIC IMPORTED)
-set_target_properties(OpenSSL::SSL PROPERTIES
-  IMPORTED_LOCATION "${OPENSSL_INSTALL_DIR}/lib/libssl.a"
-  INTERFACE_INCLUDE_DIRECTORIES "${OPENSSL_INCLUDE_DIR}"
-  INTERFACE_LINK_LIBRARIES "OpenSSL::Crypto"
-)
+# Use system OpenSSL (>= 3.0 required)
+find_package(OpenSSL REQUIRED)
 
 # Use system xmlsec1 (>= 1.2.39 required)
 find_package(xmlsec REQUIRED)
@@ -280,7 +245,7 @@ target_link_libraries(nvat
 )
 
 # Ensure dependencies are built before nvat
-add_dependencies(nvat regorus_ffi spdlog fmt openssl_external)
+add_dependencies(nvat regorus_ffi spdlog fmt)
 
 # todo (p0): remove cmake configuration helpers
 install(TARGETS nvat
