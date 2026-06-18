@@ -17,9 +17,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use log::info;
 use sha2::{Digest, Sha256};
 use tokio::fs;
+use tracing::info;
 
 #[cfg(feature = "keywrap-grpc")]
 mod grpc;
@@ -106,7 +106,7 @@ impl SecureChannel {
     fn get_filepath(&self, uri: &str) -> PathBuf {
         let mut sha256 = Sha256::new();
         sha256.update(uri.as_bytes());
-        let filename = format!("{:x}", sha256.finalize());
+        let filename = hex::encode(sha256.finalize());
         self.storage_path.join(filename)
     }
 }

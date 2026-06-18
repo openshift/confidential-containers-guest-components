@@ -9,9 +9,9 @@ use confidential_data_hub::{
     storage::volume_type::Storage,
     {hub::Hub, DataHub},
 };
-use log::{debug, error};
 use std::{error::Error as _, net::SocketAddr, sync::Arc};
 use tonic::{transport::Server, Request, Response, Status};
+use tracing::{debug, error};
 
 use crate::{
     format_error,
@@ -106,7 +106,7 @@ impl SecureMountService for Cdh {
             flags: request.flags,
             mount_point: request.mount_point,
         };
-        let mount_path = self.inner.secure_mount(storage).await.map_err(|e| {
+        let _ = self.inner.secure_mount(storage).await.map_err(|e| {
             let detailed_error = format_error!(e);
             error!("[gRPC CDH] Call CDH to secure mount failed:\n{detailed_error}");
             Status::internal(format!("[CDH] [ERROR]: {e}"))
@@ -114,7 +114,7 @@ impl SecureMountService for Cdh {
 
         debug!("[gRPC CDH] Secure mount successfully!");
 
-        let reply = SecureMountResponse { mount_path };
+        let reply = SecureMountResponse {};
 
         Result::Ok(Response::new(reply))
     }

@@ -6,20 +6,33 @@
 mod server;
 
 use anyhow::*;
-use attestation_agent::{initdata::Initdata, AttestationAPIs, AttestationAgent};
+use attestation_agent::{config::Config, initdata::Initdata, AttestationAPIs, AttestationAgent};
 use base64::Engine;
 use clap::Parser;
-use log::{debug, info};
-use tokio::signal::unix::{signal, SignalKind};
-
+use const_format::concatcp;
+use shadow_rs::shadow;
 use std::net::SocketAddr;
+use tokio::signal::unix::{signal, SignalKind};
+use tracing::{debug, info};
+use tracing_subscriber::{fmt::Subscriber, EnvFilter};
+
+shadow!(build);
 
 const DEFAULT_ATTESTATION_AGENT_ADDR: &str = "127.0.0.1:50002";
 
-const VERSION: &str = include_str!(concat!(env!("OUT_DIR"), "/version"));
+const FEATURE_INFO: &str = include_str!(concat!(env!("OUT_DIR"), "/version"));
+const DIRTY_SUFFIX: &str = if build::GIT_CLEAN { "" } else { " (dirty)" };
+const VERSION: &str = concatcp!(
+    build::LAST_TAG,
+    "-",
+    build::SHORT_COMMIT,
+    DIRTY_SUFFIX,
+    "\n",
+    FEATURE_INFO
+);
 
 #[derive(Debug, Parser)]
-#[command(author, version = Some(VERSION))]
+#[command(author, version = VERSION)]
 struct Cli {
     /// Attestation gRPC Unix socket addr.
     ///
@@ -66,12 +79,42 @@ struct Cli {
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
     let cli = Cli::parse();
+    let (config, config_log) = Config::from_file(cli.config_file)?;
+
+    let env_filter = match std::env::var_os("RUST_LOG") {
+        Some(_) => EnvFilter::try_from_default_env().context("RUST_LOG is present but invalid")?,
+        None => EnvFilter::try_new(&config.log.level)
+            .context(format!("Invalid log level: {}", config.log.level))?,
+    };
+
+    let version = format!(
+        r"
+  ___   _    _              _          _    _                     ___                       _   
+ / _ \ | |  | |            | |        | |  (_)                   / _ \                     | |  
+/ /_\ \| |_ | |_  ___  ___ | |_  __ _ | |_  _   ___   _ __      / /_\ \  __ _   ___  _ __  | |_ 
+|  _  || __|| __|/ _ \/ __|| __|/ _` || __|| | / _ \ | '_ \     |  _  | / _` | / _ \| '_ \ | __|
+| | | || |_ | |_|  __/\__ \| |_| (_| || |_ | || (_) || | | |    | | | || (_| ||  __/| | | || |_ 
+\_| |_/ \__| \__|\___||___/ \__|\__,_| \__||_| \___/ |_| |_|    \_| |_/ \__, | \___||_| |_| \__|
+                                                                         __/ |                  
+                                                                        |___/                                                                  
+version: {VERSION}
+buildtime: {}
+loglevel: {env_filter}
+rpc: grpc
+",
+        build::BUILD_TIME,
+    );
+
+    Subscriber::builder().with_env_filter(env_filter).init();
+
+    info!("Welcome to Confidential Containers Attestation Agent (gRPC version)!\n\n{version}");
+    info!("{config_log}");
+    debug!(config = ?config, "Using config");
 
     let attestation_socket = cli.attestation_sock.parse::<SocketAddr>()?;
 
-    let mut aa = AttestationAgent::new(cli.config_file.as_deref()).context("start AA")?;
+    let mut aa = AttestationAgent::new(config).context("start AA")?;
 
     let mut initdata_digest = None;
     if let Some(initdata_toml_path) = cli.initdata_toml {

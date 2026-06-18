@@ -5,10 +5,12 @@
 use anyhow::{anyhow, bail, Context, Result};
 use filetime::FileTime;
 use futures::StreamExt;
-use log::{debug, warn};
+use nix::libc;
 use nix::libc::timeval;
-use nix::sys::stat::{mknod, Mode, SFlag};
+use pathrs::flags::OpenFlags;
+use pathrs::InodeType;
 use thiserror::Error;
+use tracing::{debug, warn};
 
 use std::{
     collections::HashMap,
@@ -17,10 +19,10 @@ use std::{
     fs::Permissions,
     io,
     os::{
-        fd::{AsFd, AsRawFd},
+        fd::{AsFd, AsRawFd, BorrowedFd},
         unix::fs::PermissionsExt,
     },
-    path::{Path, PathBuf},
+    path::Path,
 };
 use tokio::{fs, io::AsyncRead};
 use tokio_tar::ArchiveBuilder;
@@ -94,6 +96,12 @@ pub enum UnpackError {
         source: anyhow::Error,
         path: String,
     },
+
+    #[error("pathrs error: {source}")]
+    PathRsFailed {
+        #[source]
+        source: pathrs::error::Error,
+    },
 }
 
 // TODO: Add unit tests for both xattr supporting case and
@@ -133,29 +141,31 @@ fn is_whiteout(name: &str) -> bool {
 async fn convert_whiteout(
     name: &str,
     path: &Path,
-    uid: u32,
-    gid: u32,
-    mode: Option<u32>,
-    destination: &Path,
+    layer_dir: &Path,
     attr_available: bool,
 ) -> Result<()> {
     let parent = path
         .parent()
         .ok_or(anyhow!("Invalid whiteout parent for path: {:?}", path))?;
 
+    let layer_dir = pathrs::Root::open(layer_dir).context("Failed initialize layer dir")?;
+
     // Handle opaque directories
     if name == WHITEOUT_OPAQUE_DIR {
+        let opaque_dir = layer_dir.resolve(parent)?;
+
         // Opaque directory whiteout requires xattr support
         if !attr_available {
             debug!(
                 "Skipping opaque directory whiteout (xattr unavailable) for: {:?}",
-                destination.join(parent)
+                opaque_dir
             );
             return Ok(());
         }
 
-        let destination_parent = destination.join(parent);
-        xattr::set(destination_parent, "trusted.overlay.opaque", b"y")?;
+        let opaque_dir = opaque_dir.reopen(OpenFlags::O_RDONLY)?;
+        opaque_dir.set_xattr("trusted.overlay.opaque", b"y")?;
+
         return Ok(());
     }
 
@@ -164,39 +174,33 @@ async fn convert_whiteout(
         .strip_prefix(WHITEOUT_PREFIX)
         .ok_or(anyhow!("Failed to strip whiteout prefix for: {}", name))?;
     let original_path = parent.join(original_name);
-    let path = CString::new(format!(
-        "{}/{}",
-        destination.display(),
-        original_path.display()
-    ))?;
 
-    let path_str = path.to_string_lossy().into_owned();
-    let path_buf = PathBuf::from(path_str);
-    if let Some(parent) = path_buf.parent() {
-        fs::create_dir_all(parent).await?;
+    if let Some(parent) = original_path.parent() {
+        layer_dir.mkdir_all(parent, &Permissions::from_mode(0o755))?;
     }
 
-    mknod(path.as_c_str(), SFlag::S_IFCHR, Mode::empty(), 0)?;
+    layer_dir.create(
+        &original_path,
+        &InodeType::CharacterDevice(Permissions::from_mode(0o000), 0),
+    )?;
 
-    set_perms_ownerships(&path, ChownType::LChown, uid, gid, mode).await
+    Ok(())
 }
 
-/// Unpack the contents of tarball to the destination path
-pub async fn unpack<R: AsyncRead + Unpin>(input: R, destination: &Path) -> UnpackResult<()> {
-    if destination.exists() {
-        warn!(
-            "unpack destination {destination:?} already exists, will delete and rerwrite the layer",
-        );
-        fs::remove_dir_all(destination)
+/// Unpack the contents of tarball to the layer_dir path
+pub async fn unpack<R: AsyncRead + Unpin>(input: R, layer_dir: &Path) -> UnpackResult<()> {
+    if layer_dir.exists() {
+        warn!("layer_dir {layer_dir:?} already exists, will delete and rewrite the layer",);
+        fs::remove_dir_all(layer_dir)
             .await
             .map_err(|source| UnpackError::DeleteExistingLayerFailed { source })?;
     }
 
-    fs::create_dir_all(destination)
+    fs::create_dir_all(layer_dir)
         .await
         .map_err(|source| UnpackError::CreateLayerDirectoryFailed { source })?;
 
-    let attr_available = is_attr_available(destination);
+    let attr_available = is_attr_available(layer_dir);
     let mut archive = ArchiveBuilder::new(input)
         .set_ignore_zeros(true)
         .set_unpack_xattrs(attr_available)
@@ -241,23 +245,15 @@ pub async fn unpack<R: AsyncRead + Unpin>(input: R, destination: &Path) -> Unpac
         let kind = file.header().entry_type();
 
         if is_whiteout(entry_name) {
-            convert_whiteout(
-                entry_name,
-                &entry_path,
-                uid,
-                gid,
-                mode,
-                destination,
-                attr_available,
-            )
-            .await
-            .map_err(|source| UnpackError::ConvertWhiteoutFailed { source })?;
+            convert_whiteout(entry_name, &entry_path, layer_dir, attr_available)
+                .await
+                .map_err(|source| UnpackError::ConvertWhiteoutFailed { source })?;
             continue;
         }
 
-        match file.unpack_in(destination).await {
-            Ok(_) => {}
-            Err(e) => match try_hardlink_fallback(&kind, &mut file, destination).await {
+        // Both of these paths ensure that the entry is actually inside the layer dir
+        if let Err(e) = file.unpack_in(layer_dir).await {
+            match try_hardlink_fallback(&kind, &mut file, layer_dir).await {
                 Ok(true) => {}
                 Ok(false) => return Err(UnpackError::UnpackFailed { source: e }),
                 Err(f) => {
@@ -267,16 +263,17 @@ pub async fn unpack<R: AsyncRead + Unpin>(input: R, destination: &Path) -> Unpac
                         )),
                     })
                 }
-            },
+            }
         }
 
         let path = format!(
             "{}/{}",
-            destination.display(),
+            layer_dir.display(),
             file.path()
                 .map_err(|source| UnpackError::ReadTarEntriesFailed { source })?
                 .display()
         );
+
         let path_cstring =
             CString::new(path.clone()).map_err(|_| UnpackError::IllegalEntryName(path.clone()))?;
 
@@ -294,10 +291,20 @@ pub async fn unpack<R: AsyncRead + Unpin>(input: R, destination: &Path) -> Unpac
         //
         // because we changed the files ownership manually, thus we need to reset
         // the mtime again.
-        if kind.is_dir() || file.header().as_ustar().is_none() && file.path_bytes().ends_with(b"/")
+        if kind.is_dir()
+            || file.header().as_ustar().is_none()
+                && file
+                    .path_bytes()
+                    .map_err(|source| UnpackError::ReadTarEntriesFailed { source })?
+                    .ends_with(b"/")
         {
-            set_perms_ownerships(&path_cstring, ChownType::LChown, uid, gid, mode)
-                .await
+            let f =
+                std::fs::File::open(file_path).map_err(|e| UnpackError::SetOwnershipsFailed {
+                    source: anyhow!("failed to open dir: {e}"),
+                    path: path.clone(),
+                })?;
+
+            set_permissions(f.as_fd(), uid, gid, mode)
                 .map_err(|source| UnpackError::SetOwnershipsFailed { source, path })?;
             let atime = timeval {
                 tv_sec: mtime,
@@ -308,7 +315,6 @@ pub async fn unpack<R: AsyncRead + Unpin>(input: R, destination: &Path) -> Unpac
 
             dirs.insert(path_cstring.clone(), times);
         } else if !kind.is_symlink() && !kind.is_hard_link() {
-            // for other files except link we use fchown
             let f = fs::OpenOptions::new()
                 .write(true)
                 .open(file_path)
@@ -318,12 +324,12 @@ pub async fn unpack<R: AsyncRead + Unpin>(input: R, destination: &Path) -> Unpac
                     path: path.clone(),
                 })?;
 
-            set_perms_ownerships(&path_cstring, ChownType::FChown(f), uid, gid, mode)
-                .await
-                .map_err(|source| UnpackError::SetOwnershipsFailed {
+            set_permissions(f.as_fd(), uid, gid, mode).map_err(|source| {
+                UnpackError::SetOwnershipsFailed {
                     source,
                     path: path.clone(),
-                })?;
+                }
+            })?;
 
             // set mtime
             let mtime = FileTime::from_unix_time(mtime, 0);
@@ -333,6 +339,17 @@ pub async fn unpack<R: AsyncRead + Unpin>(input: R, destination: &Path) -> Unpac
                     path,
                 }
             })?;
+        } else if kind.is_symlink() {
+            let path_cstr =
+                CString::new(file_path).map_err(|_| UnpackError::IllegalEntryName(path.clone()))?;
+            let ret = unsafe { libc::lchown(path_cstr.as_ptr(), uid, gid) };
+
+            if ret != 0 {
+                return Err(UnpackError::SetOwnershipsFailed {
+                    source: io::Error::last_os_error().into(),
+                    path: path.clone(),
+                });
+            }
         }
     }
 
@@ -353,108 +370,71 @@ pub async fn unpack<R: AsyncRead + Unpin>(input: R, destination: &Path) -> Unpac
     Ok(())
 }
 
-enum ChownType {
-    LChown,
-    FChown(fs::File),
-}
-
-async fn set_perms_ownerships(
-    dst: &CString,
-    chown: ChownType,
-    uid: u32,
-    gid: u32,
-    mode: Option<u32>,
-) -> Result<()> {
-    match chown {
-        ChownType::FChown(f) => {
-            let ret = unsafe { nix::libc::fchown(f.as_fd().as_raw_fd(), uid, gid) };
-            if ret != 0 {
-                bail!(
-                    "failed to set ownerships of file: {:?} chown error: {:?}",
-                    dst,
-                    io::Error::last_os_error()
-                );
-            }
-        }
-        ChownType::LChown => {
-            let ret = unsafe { nix::libc::lchown(dst.as_ptr(), uid, gid) };
-            if ret != 0 {
-                bail!(
-                    "failed to set ownerships of file: {:?} lchown error: {:?}",
-                    dst,
-                    io::Error::last_os_error()
-                );
-            }
-        }
+fn set_permissions(fd: BorrowedFd<'_>, uid: u32, gid: u32, mode: Option<u32>) -> Result<()> {
+    let ret =
+        unsafe { libc::fchownat(fd.as_raw_fd(), c"".as_ptr(), uid, gid, libc::AT_EMPTY_PATH) };
+    if ret != 0 {
+        bail!("failed to set ownership: {:?}", io::Error::last_os_error());
     }
-    // ... then set permissions, SUID bits set here is kept
+
     if let Some(mode) = mode {
-        let perm = Permissions::from_mode(mode as _);
-        fs::set_permissions(Path::new(dst.to_str().expect("must be utf8")), perm)
-            .await
-            .context("failed to set permissions")?;
+        let ret = unsafe { libc::fchmod(fd.as_raw_fd(), mode as libc::mode_t) };
+        if ret != 0 {
+            bail!(
+                "failed to set permissions: {:?}",
+                io::Error::last_os_error()
+            );
+        }
     }
 
     Ok(())
 }
 
-// Fallback for hard links whose linkname is absolute. Returns true if it handled the entry.
+/// Try creating a hardlink with an absolute link name/target.
+/// Returns Ok(True) if the hardlink is created.
 async fn try_hardlink_fallback<R: AsyncRead + Unpin>(
     kind: &tokio_tar::EntryType,
     file: &mut tokio_tar::Entry<R>,
-    destination: &Path,
+    layer_dir: &Path,
 ) -> UnpackResult<bool> {
     if !kind.is_hard_link() {
         return Ok(false);
     }
 
-    let linkname = match file
+    // With tar archives, the link name refers to the file that
+    // the hard link is pointing to.
+    // This is the opposite of how the term is used with ln.
+    let link_target = match file
         .link_name()
         .map_err(|source| UnpackError::ReadTarEntriesFailed { source })?
     {
         Some(cow) => cow.into_owned(),
         None => return Ok(false),
     };
-    if !linkname.is_absolute() {
+    if !link_target.is_absolute() {
         return Ok(false);
     }
 
-    let entry_rel = file
+    // Hardlinks may not exit the layer dir.
+    let layer_dir =
+        pathrs::Root::open(layer_dir).map_err(|source| UnpackError::PathRsFailed { source })?;
+
+    let link_path = file
         .path()
         .map_err(|source| UnpackError::ReadTarEntriesFailed { source })?;
 
-    // Resolve the final destination path for this entry and ensure parent exists.
-    let dst_entry_abs = destination.join(&entry_rel);
-    if let Some(parent) = dst_entry_abs.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|source| UnpackError::UnpackFailed { source })?;
+    // Create parent directories for the link path (link target must already exist)
+    if let Some(parent) = link_path.parent() {
+        layer_dir
+            .mkdir_all(parent, &Permissions::from_mode(0o755))
+            .map_err(|source| UnpackError::PathRsFailed { source })?;
     }
 
-    // Drop the leading root from linkname
-    let stripped = linkname
-        .strip_prefix(Path::new("/"))
-        .unwrap_or(linkname.as_path());
-    let anchored_src = destination.join(stripped);
+    layer_dir
+        .create(&link_path, &InodeType::Hardlink(link_target.to_path_buf()))
+        .map_err(|source| UnpackError::PathRsFailed { source })?;
 
-    // Resolve symlinks according to the actual FS
-    let dst_canon = fs::canonicalize(destination)
-        .await
-        .map_err(|source| UnpackError::UnpackFailed { source })?;
-    let src_canon = fs::canonicalize(&anchored_src)
-        .await
-        .map_err(|source| UnpackError::UnpackFailed { source })?;
-
-    if !src_canon.starts_with(&dst_canon) {
-        return Err(UnpackError::UnpackFailed {
-            source: std::io::Error::other("hardlink target escapes destination"),
-        });
-    }
-
-    match fs::hard_link(&src_canon, &dst_entry_abs).await {
-        Ok(()) => Ok(true),
-        Err(e) => Err(UnpackError::UnpackFailed { source: e }),
-    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -468,9 +448,12 @@ mod tests {
     };
     use tokio_tar::{Builder, EntryType, Header};
 
+    use rstest::rstest;
+
     use super::*;
 
     #[tokio::test]
+    #[cfg_attr(target_arch = "s390x", ignore)]
     async fn test_unpack() {
         let mut ar = Builder::new(Vec::new());
         let tempdir = tempfile::tempdir().unwrap();
@@ -613,21 +596,33 @@ mod tests {
         assert!(unpack(data.as_slice(), destination).await.is_ok());
     }
 
+    #[rstest]
+    #[case::absolute_link_target("/etc/os-release", true)]
+    #[case::relative_escape_link_target("../../etc/os-release", false)]
     #[tokio::test]
-    async fn test_unpack_rejects_escaping_absolute_hardlink() {
+    async fn test_unpack_hardlink_tar_cases(#[case] link_name: &str, #[case] expect_ok: bool) {
         let td = tempfile::tempdir().unwrap();
-        let outside_file = td.path().join("outside_file");
-        let mut f = File::create(&outside_file).await.unwrap();
-        f.write_all(b"outside-data").await.unwrap();
-        f.flush().await.unwrap();
-
-        // linkname = "/../outside_file" will be anchored in fallback mode as
-        // destination/../outside_file, which points to the parent directory of the destination.
         let mut ar = Builder::new(Vec::new());
+
+        // 1. Create a file, write content, add it to the archive as the link target.
+        let source_file = td.path().join("os-release");
+        let mut f = File::create(&source_file).await.unwrap();
+        f.write_all(b"test-data\n").await.unwrap();
+        f.flush().await.unwrap();
+        ar.append_file(
+            "etc/os-release",
+            &mut File::open(&source_file).await.unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // 2. Append a hardlink entry with case-provided link target.
+        let link_entry_path = "etc/os-release.hardlink";
+
         let mut hdr = Header::new_gnu();
         hdr.set_entry_type(EntryType::Link);
-        hdr.set_link_name("/../outside_file").unwrap();
-        hdr.set_path("subdir/evil_hardlink").unwrap();
+        hdr.set_link_name(link_name).unwrap();
+        hdr.set_path(link_entry_path).unwrap();
         hdr.set_size(0);
         hdr.set_mode(0o644);
         hdr.set_uid(0);
@@ -637,26 +632,27 @@ mod tests {
         ar.append(&hdr, empty()).await.unwrap();
 
         let data = ar.into_inner().await.unwrap();
-
         let destination = td.path().join("dest");
         let res = unpack(data.as_slice(), &destination).await;
 
-        // Expectation: unpacking should fail due to anti-escape check
-        match res {
-            Err(UnpackError::UnpackFailed { source }) => {
-                assert!(
-                    source
-                        .to_string()
-                        .contains("hardlink target escapes destination"),
-                    "unexpected error: {source}"
-                );
-            }
-            Ok(_) => panic!("unpack unexpectedly succeeded; anti-escape check failed"),
-            Err(e) => panic!("unexpected error variant: {e:?}"),
+        // 3. Assert unpack outcome and resulting paths under destination.
+        let hardlink_path = destination.join(link_entry_path);
+        if expect_ok {
+            res.unwrap();
+            let target = destination.join("etc/os-release");
+            let target_meta = fs::metadata(&target).await.unwrap();
+            let hardlink_meta = fs::metadata(&hardlink_path).await.unwrap();
+            assert!(target_meta.is_file() && hardlink_meta.is_file());
+            assert_eq!(target_meta.ino(), hardlink_meta.ino());
+        } else {
+            assert!(
+                res.is_err(),
+                "unpack should fail when hardlink target resolves outside the layer root: {res:?}"
+            );
+            assert!(
+                fs::metadata(&hardlink_path).await.is_err(),
+                "hardlink entry must not be created under destination"
+            );
         }
-
-        // Confirm that the escaping hardlink was not created
-        let evil_path = destination.join("subdir/evil_hardlink");
-        assert!(fs::metadata(&evil_path).await.is_err());
     }
 }

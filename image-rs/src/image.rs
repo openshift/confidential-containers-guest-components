@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::{bail, Context};
-use log::{debug, error, info, warn};
 use oci_client::{
     client::{Certificate, CertificateEncoding, ClientConfig, ClientProtocol},
     manifest::{OciDescriptor, OciImageManifest},
@@ -16,6 +15,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
+use tracing::{debug, error, info, warn};
 
 use tokio::sync::RwLock;
 
@@ -381,7 +381,9 @@ impl ImageClient {
             client_config,
         )
         .map_err(|source| PullImageError::Internal { source })?;
-        let (image_manifest, image_digest, image_config) = client.pull_manifest().await?;
+
+        let (image_manifest, image_digest, image_config, manifest_list_digest) =
+            client.pull_manifest().await?;
 
         let id = image_manifest.config.digest.clone();
 
@@ -401,7 +403,12 @@ impl ImageClient {
         #[cfg(feature = "signature")]
         if let Some(signature_validator) = &self.signature_validator {
             signature_validator
-                .check_image_signature(image_url, &image_digest, &auth)
+                .check_image_signature(
+                    image_url,
+                    &image_digest,
+                    manifest_list_digest.as_deref(),
+                    &auth,
+                )
                 .await?;
         }
 
