@@ -8,13 +8,8 @@ LIBC ?= musl
 
 ATTESTER ?=
 
-NO_RESOURCE_PROVIDER ?=
-
-ifeq ($(NO_RESOURCE_PROVIDER), true)
-  RESOURCE_PROVIDER :=
-else
-  RESOURCE_PROVIDER ?= kbs
-endif
+# Enable the `kbs` cargo feature (cc_kbc / CoCo KBS). offline_fs_kbc is always built.
+ENABLE_KBS ?= true
 
 ifeq ($(ARCH), ppc64le)
   ARCH=powerpc64le
@@ -28,31 +23,14 @@ else ifeq ($(TEE_PLATFORM), tdx)
   ATTESTER = tdx-attester
 else ifeq ($(TEE_PLATFORM), az-cvm-vtpm)
   ATTESTER = az-snp-vtpm-attester,az-tdx-vtpm-attester
-else ifeq ($(TEE_PLATFORM), sev)
-  ATTESTER = none
-  ifeq ($(NO_RESOURCE_PROVIDER), true)
-    RESOURCE_PROVIDER :=
-  else
-    RESOURCE_PROVIDER = sev
-  endif
 else ifeq ($(TEE_PLATFORM), snp)
   ATTESTER = snp-attester
 else ifeq ($(TEE_PLATFORM), se)
   ATTESTER = se-attester
 else ifeq ($(TEE_PLATFORM), all)
   ATTESTER = all-attesters
-  ifeq ($(NO_RESOURCE_PROVIDER), true)
-    RESOURCE_PROVIDER :=
-  else
-    RESOURCE_PROVIDER = sev,kbs
-  endif
 else ifeq ($(TEE_PLATFORM), amd)
   ATTESTER = snp-attester
-  ifeq ($(NO_RESOURCE_PROVIDER), true)
-    RESOURCE_PROVIDER :=
-  else
-    RESOURCE_PROVIDER = sev,kbs
-  endif
 else ifeq ($(TEE_PLATFORM), cca)
   ATTESTER = cca-attester
 endif
@@ -86,7 +64,7 @@ build: $(CDH_BINARY) $(ASR_BINARY) $(AA_BINARY)
 
 $(CDH_BINARY):
 	@echo build $(CDH) for $(TEE_PLATFORM)
-	cd $(CDH) && $(MAKE) RESOURCE_PROVIDER=$(RESOURCE_PROVIDER) ARCH=$(ARCH) LIBC=$(LIBC)
+	cd $(CDH) && $(MAKE) ENABLE_KBS=$(ENABLE_KBS) ARCH=$(ARCH) LIBC=$(LIBC)
 
 $(AA_BINARY):
 	@echo build $(AA) for $(TEE_PLATFORM)
@@ -113,6 +91,28 @@ build-protos:
 	  echo "Not Debian OS, skip"; \
   fi;
 	cargo build -p protos --features build
+
+fmt:
+	cargo fmt --all -- --check
+
+lint:
+	$(MAKE) -C $(AA) lint
+	$(MAKE) -C $(CDH) LIBC=gnu lint
+	$(MAKE) -C $(ASR) lint
+	$(MAKE) -C image-rs lint
+	$(MAKE) -C ocicrypt-rs lint
+
+# CDH and image-rs integration tests need root (loop/zfs devices, /etc fixtures).
+# sudo -E PATH=$(PATH) $(MAKE) test
+test:
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo >&2 "note: CDH/image-rs tests need root; re-run with: sudo -E PATH=\$$PATH $(MAKE) test"; \
+	fi
+	$(MAKE) -C $(AA) test
+	$(MAKE) -C $(CDH) LIBC=gnu test
+	$(MAKE) -C $(ASR) test
+	$(MAKE) -C image-rs test
+	$(MAKE) -C ocicrypt-rs test
 
 clean:
 	rm -rf target

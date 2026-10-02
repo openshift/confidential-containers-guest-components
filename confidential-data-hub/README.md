@@ -5,14 +5,19 @@ APIs.
 
 ### APIs
 
-The APIs are defined in the [proto file](./hub/protos/). 
+The APIs are defined in the [proto file](../protos/protos/confidential-data-hub).
 
-Note that CDH supports decryption of encrypted images. 
-To enable this you need to set environment `OCICRYPT_KEYPROVIDER_CONFIG`  to point to the [ocicrypt configuration file](./hub/src/image/ocicrypt_config.json) at startup, for example 
+Note that CDH supports decryption of encrypted images.
+When `OCICRYPT_KEYPROVIDER_CONFIG` is unset, CDH writes a default ocicrypt
+keyprovider config that maps the `attestation-agent` provider to CDH's own
+socket (from the CDH config). Operators can still override by pointing
+`OCICRYPT_KEYPROVIDER_CONFIG` at a custom file, for example:
 
 ```shell
 OCICRYPT_KEYPROVIDER_CONFIG=<path-to-ocicrypt_config.json> confidential-data-hub
 ```
+
+An example config file is at [hub/src/image/ocicrypt_config.json](./hub/src/image/ocicrypt_config.json).
 
 ### Build
 
@@ -23,23 +28,23 @@ git clone https://github.com/confidential-containers/guest-components
 cd guest-components/confidential-data-hub
 make
 ```
-This will build CDH with `RESOURCE_PROVIDER=kbs,sev` and `KMS_PROVIDER=aliyun,ehsm`
+This will build CDH with `kbs` enabled and `KMS_PROVIDER=aliyun`.
 
-You can explicitly specify the confidential resource provider and KMS_PROVIDER plugin during the build.
-For example if you only want to include `aliyun` KMS_PROVIDER: 
+You can explicitly specify KMS_PROVIDER plugins during the build.
+For example if you only want to include `aliyun` KMS_PROVIDER:
 
 ```shell
 make KMS_PROVIDER=aliyun
 ```
 
-If you don't want to include any KMS_PROVIDER(s) and want to use only `kbs` as the resource provider:
+If you don't want to include any KMS_PROVIDER(s) (still with `cc_kbc` / CoCo KBS):
 ```shell
-make RESOURCE_PROVIDER=kbs KMS_PROVIDER=none
+make KMS_PROVIDER=none
 ```
 
-If you don't want to include any RESOURCE_PROVIDER(s):
+If you only want the builtin `offline_fs_kbc` (no `cc_kbc`):
 ```shell
-make RESOURCE_PROVIDER=none
+make ENABLE_KBS=false
 ```
 
 The default CDH runs as a service daemon. If you want to build CDH to an one-shot binary (run once and exit), use flag `ONE_SHOT=true`
@@ -51,25 +56,25 @@ Please refer to [Supported Features](#supported-features) for the options.
 
 ### Supported Features
 
-Confidential resource providers (flag `RESOURCE_PROVIDER`)
+CoCo KBS / `cc_kbc` (flag `ENABLE_KBS`)
 
-| Feature name        |           Note                                                     |
-| ------------------- | -----------------------------------------------------------------  |
-| kbs                 | For TDX/SNP/Azure-SNP-vTPM based on KBS Attestation Protocol       |
-| sev                 | For SEV based on efi secret pre-attestation                        |
+| Value  | Note                                                                 |
+| ------ | -------------------------------------------------------------------- |
+| true   | Enable cargo feature `kbs` (`cc_kbc` with KBS attestation protocol). Default. |
+| false  | Build without `cc_kbc`. `offline_fs_kbc` is still available.         |
 
 Note:
-- If no `RESOURCE_PROVIDER` flag is given, then all the resource providers will be enabled by default
+- Omit `ENABLE_KBS` to keep the default (`true`). Only set it when disabling.
 
 KMS_PROVIDER plugins (flag `KMS_PROVIDER`)
 
-| Feature name        |           Note                                                     |
-| ------------------- | -----------------------------------------------------------------  |
-| aliyun              | Use aliyun KMS_PROVIDER suites to unseal secrets, etc.                      |
-| ehsm(no longer maintained) | Use Intel eHSM KMS_PROVIDER suites to unseal secrets, etc.                  |
+| Feature name | Note                                                        |
+| ------------ | ----------------------------------------------------------- |
+| aliyun       | Use Alibaba Cloud KMS to seal and unseal secrets.           |
+| aws          | Use AWS KMS and Secrets Manager for confidential secrets.   |
 
 Note:
-- If no `KMS_PROVIDER` flag is given, then all the KMS providers will be enabled by default.
+- If no `KMS_PROVIDER` flag is given, `aliyun` is enabled by default.
 
 RPC plugins (flag `RPC`)
 | Feature name        |           Note                                                     |

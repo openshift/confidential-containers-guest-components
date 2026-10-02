@@ -27,8 +27,30 @@ make build-protos
 
 ## Test
 
+The workspace root and each component crate expose `make test` targets. Prefer these for
+local checks — they exercise the same feature combinations as `make lint` and component
+builds.
+
 ```bash
-# Run all tests for a single crate
+# Run tests for all components (CDH and image-rs need root; see note below)
+make test
+sudo -E PATH=$PATH make test
+
+# Run tests for a single component
+make -C attestation-agent test
+make -C confidential-data-hub test
+make -C api-server-rest test
+make -C image-rs test
+make -C ocicrypt-rs test
+
+# Attestation-agent: build/lint/test share ATTESTER and OPENSSL knobs
+make -C attestation-agent ATTESTER=all-attesters test
+make -C attestation-agent ATTESTER=tdx-attester OPENSSL=1 test   # s390x sets OPENSSL=1 by default
+```
+
+For ad-hoc single-crate or single-test runs:
+
+```bash
 cargo test -p attestation-agent
 cargo test -p confidential-data-hub
 cargo test -p image-rs
@@ -39,7 +61,7 @@ cargo test -p image-rs -- test_name
 
 # Many tests require specific features to compile
 cargo test -p image-rs --features kata-cc-rustls-tls
-cargo test -p confidential-data-hub --features kbs,aliyun,sev,bin
+cargo test -p confidential-data-hub --features kbs,aliyun,bin
 cargo test -p attestation-agent --features all-attesters,kbs,coco_as
 
 # Integration tests often need serial execution
@@ -51,10 +73,27 @@ Most integration tests require root privileges, running CDH/KBS services, and pr
 ## Lint
 
 ```bash
+# Workspace-wide checks (preferred entry point)
+make fmt
+make lint
+
+# Per-component lint (same feature matrices as component test targets)
+make -C attestation-agent lint
+make -C confidential-data-hub lint
+make -C api-server-rest lint
+make -C image-rs lint
+make -C ocicrypt-rs lint
+```
+
+`attestation-agent`, `image-rs`, and `ocicrypt-rs` lint multiple feature combinations
+(including `--no-default-features` presets). `image-rs` and `ocicrypt-rs` keep mutually
+exclusive feature axes; native keywrap targets run on x86_64 only.
+
+For one-off cargo runs:
+
+```bash
 cargo fmt --check
 cargo clippy -- -D warnings
-
-# Clippy with features (CI validates multiple feature combinations)
 cargo clippy -p image-rs --features kata-cc-rustls-tls -- -D warnings
 ```
 
@@ -88,7 +127,7 @@ Feature flags are heavily used to control platform support, crypto backends, and
 - **TEE attesters** (AA): `tdx-attester`, `snp-attester`, `sgx-attester`, `se-attester`, `cca-attester`, `az-snp-vtpm-attester`, `az-tdx-vtpm-attester`, `all-attesters`
 - **Crypto backends**: `encryption-ring` (default) vs `encryption-openssl`, `rust-crypto` vs `openssl`
 - **Key wrapping** (image-rs/ocicrypt-rs): `keywrap-ttrpc`, `keywrap-grpc`, `keywrap-jwe`, `keywrap-keyprovider-cmd`
-- **KMS providers** (CDH): `kbs`, `sev`, `aliyun`, `ehsm`
+- **KMS providers** (CDH): `kbs`, `aliyun`, `aws`
 - **TLS**: `rustls-tls` (default) vs `native-tls`; preset features like `kata-cc-rustls-tls`
 - **RPC protocol**: `ttrpc` (default), `grpc`
 

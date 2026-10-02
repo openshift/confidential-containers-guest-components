@@ -10,7 +10,26 @@ in conjunction with an attestation.
 The Confidential Data Hub provides an API for unsealing secrets inside
 of a confidential guest.
 
-You can use the secret cli tool to generate a sealed secret:
+You can use the secret cli tool to generate a sealed secret.
+
+### Prebuilt binary (recommended)
+
+Each [GitHub release](https://github.com/confidential-containers/guest-components/releases)
+ships the `secret` CLI as a prebuilt artifact with all KMS providers bundled,
+so you do not need a Rust toolchain. Download the tarball matching your
+platform, verify it, and extract the binary:
+
+```bash
+# Pick the asset for your platform, e.g. secret-x86_64-unknown-linux-musl.tar.gz
+ASSET=secret-x86_64-unknown-linux-musl.tar.gz
+sha256sum -c "${ASSET}.sha256"
+tar xzf "$ASSET"
+./secret-x86_64-unknown-linux-musl/secret --help
+```
+
+### Build from source
+
+Alternatively, build it yourself:
 
 ```bash
 cargo run -p confidential-data-hub --bin secret
@@ -161,21 +180,16 @@ This will create a sealed secret that points to the resource `secret/key/uri` in
 The secret will be validated with a public key stored in Trustee.
 The public/private keypair should be a JWK with a P256 EC key.
 
-This key should look like this.
-```json
-{
-    "kty": "EC",
-    "d": "_z0AOMG12p1lt...",
-    "use": "sig",
-    "crv": "P-256",
-    "kid": "test",
-    "x": "wjCZnuv_tLKiCt...",
-    "y": "gsSc2YE_O2kmHx...",
-    "alg": "ES256"
-}
+You can generate a keypair with the `keygen` subcommand:
+
+```bash
+cargo run -p confidential-data-hub --bin secret keygen --kid my-signing-key --output-dir ./keys
 ```
-This includes the public and private keypair. Only the public component
-needs to be provisioned to Trustee.
+
+This writes two files: `my-signing-key-private.json` (used for signing)
+and `my-signing-key-public.json` (provisioned to Trustee).
+
+Only the public component needs to be provisioned to Trustee.
 
 ### Create a Kubernetes secret
 
@@ -202,6 +216,4 @@ Your secret will be provisioned to the `PROTECTED_SECRET` environment variable.
 | ------------------ | -------------------------------------------------------------------- | ------------------------- |
 | aliyun       	     |  [aliyun](kms-providers/alibaba.md)                               	| Alibaba                   |
 | aws       	     |  [aws](kms-providers/aws.md)                                     	| CoCo                      |
-| ehsm       	     |  [ehsm](kms-providers/ehsm-kms.md)                              		| Unmaintained                   	|
 | kbs                |                                                                          | CoCo                  |
-

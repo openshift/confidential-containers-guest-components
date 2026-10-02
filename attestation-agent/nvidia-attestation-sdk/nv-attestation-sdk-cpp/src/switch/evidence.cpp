@@ -299,6 +299,7 @@ Error SwitchEvidence::AttestationReport::create(const std::vector<uint8_t>& atte
         LOG_ERROR("Failed to parse SWITCH opaque data.");
         return Error::InternalError;
     }
+    LOG_TRACE("NVSwitch opaque data: " << out_attestation_report.m_switch_opaque_data_parser);
 
     return Error::Ok;
 }
@@ -425,10 +426,9 @@ Error SwitchEvidence::AttestationReport::get_vbios_rim_id(std::string& out_vbios
         return error;
     }
 
-    // remove "." from vbios_version
+    // clean vbios_version: remove . and ensure uppercase
     vbios_version.erase(std::remove(vbios_version.begin(), vbios_version.end(), '.'), vbios_version.end());
-    // make it lowercase
-    std::transform(vbios_version.begin(), vbios_version.end(), vbios_version.begin(), ::tolower);
+    std::transform(vbios_version.begin(), vbios_version.end(), vbios_version.begin(), ::toupper);
 
     SwitchArchitectureData arch_data;
     error = SwitchArchitectureData::create(architecture, arch_data);

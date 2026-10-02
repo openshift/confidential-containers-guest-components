@@ -7,19 +7,19 @@
 
 use anyhow::Context;
 use anyhow::Result;
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use clap::{Parser, Subcommand};
 use shadow_rs::{formatcp, shadow};
 use std::fs;
 use std::path::PathBuf;
 use tracing::debug;
-use tracing_subscriber::{fmt::Subscriber, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt::Subscriber};
 
-use kbs_protocol::evidence_provider::NativeEvidenceProvider;
 use kbs_protocol::KbsClientBuilder;
 use kbs_protocol::KbsClientCapabilities;
 use kbs_protocol::ResourceUri;
+use kbs_protocol::evidence_provider::NativeEvidenceProvider;
 
 shadow!(build);
 
@@ -78,6 +78,13 @@ async fn main() -> Result<()> {
 
     // a kbs_protocol client with evidence_provider
     let mut client_builder = KbsClientBuilder::with_evidence_provider(evidence_provider, &url);
+
+    // Sets TeeKeyAlgorithm to ML-KEM if pqc-experimental feature enabled.
+    #[cfg(feature = "pqc-experimental")]
+    {
+        client_builder =
+            client_builder.set_tee_key_algorithm(kbs_protocol::TeeKeyAlgorithm::MlKem768A192Kw);
+    }
 
     // if a certificate is given, use it
     if let Some(cf) = cert_file {

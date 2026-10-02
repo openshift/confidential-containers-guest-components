@@ -7,9 +7,9 @@ use std::env;
 
 use async_trait::async_trait;
 use aws_sdk_kms::{
+    Client as KmsClient,
     config::{BehaviorVersion, Credentials, Region},
     primitives::Blob,
-    Client as KmsClient,
 };
 use aws_sdk_secretsmanager::Client as SecretsManagerClient;
 use const_format::concatcp;
@@ -28,7 +28,7 @@ use super::credential::AwsCredential;
 /// expected to be provisioned into the TEE's encrypted memory before use.
 const AWS_IN_GUEST_DEFAULT_KEY_PATH: &str = concatcp!(_IN_GUEST_DEFAULT_KEY_PATH, "/aws");
 
-/// Name of the credential file inside the key path. Unlike Aliyun/eHSM the AWS
+/// Name of the credential file inside the key path. Unlike Aliyun, the AWS
 /// credential is not keyed on any public identifier (the decryptor side only
 /// knows the region), so a fixed file name is used.
 const AWS_CREDENTIAL_FILE_NAME: &str = "credential.json";
@@ -272,7 +272,10 @@ impl Setter for AwsKmsClient {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+
     use serde_json::json;
+    use serial_test::serial;
 
     use super::super::annotations::AwsProviderSettings;
     use super::AwsKmsClient;
@@ -307,5 +310,52 @@ mod tests {
         // Temporary STS credentials (with a session token) must construct too.
         AwsKmsClient::new("us-east-1", "ASIAEXAMPLE", "secret", Some("token"))
             .expect("build client with session token");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn from_provider_settings_missing_credential_file_returns_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        unsafe { env::set_var("AWS_IN_GUEST_KEY_PATH", dir.path().to_str().unwrap()) };
+        let ps = json!({ "region": "us-east-1" })
+            .as_object()
+            .unwrap()
+            .to_owned();
+        let result = AwsKmsClient::from_provider_settings(&ps).await;
+        unsafe { env::remove_var("AWS_IN_GUEST_KEY_PATH") };
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn from_provider_settings_malformed_credential_json_returns_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        unsafe { env::set_var("AWS_IN_GUEST_KEY_PATH", dir.path().to_str().unwrap()) };
+        tokio::fs::write(dir.path().join("credential.json"), b"not json")
+            .await
+            .unwrap();
+        let ps = json!({ "region": "us-east-1" })
+            .as_object()
+            .unwrap()
+            .to_owned();
+        let result = AwsKmsClient::from_provider_settings(&ps).await;
+        unsafe { env::remove_var("AWS_IN_GUEST_KEY_PATH") };
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn from_provider_settings_missing_region_returns_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        unsafe { env::set_var("AWS_IN_GUEST_KEY_PATH", dir.path().to_str().unwrap()) };
+        let cred = r#"{"access_key_id":"AKIA","secret_access_key":"secret"}"#;
+        tokio::fs::write(dir.path().join("credential.json"), cred)
+            .await
+            .unwrap();
+        // empty provider settings — no region field
+        let ps = json!({}).as_object().unwrap().to_owned();
+        let result = AwsKmsClient::from_provider_settings(&ps).await;
+        unsafe { env::remove_var("AWS_IN_GUEST_KEY_PATH") };
+        assert!(result.is_err());
     }
 }

@@ -4,14 +4,14 @@
 //
 
 use clap::Parser;
+use hyper::Server;
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::Server;
 use shadow_rs::shadow;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{error, info};
-use tracing_subscriber::{fmt::Subscriber, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt::Subscriber};
 
 shadow!(build);
 
@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
     };
     let router = Router::new(aa_client, cdh_client, args.features);
 
-    let router = Arc::new(tokio::sync::Mutex::new(router));
+    let router = Arc::new(router);
 
     let api_service = make_service_fn(|conn: &AddrStream| {
         let remote_addr = conn.remote_addr();
@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
         async move {
             Ok::<_, GenericError>(service_fn(move |req| {
                 let local_router = local_router.clone();
-                async move { local_router.lock().await.route(remote_addr, req).await }
+                async move { local_router.route(remote_addr, req).await }
             }))
         }
     });

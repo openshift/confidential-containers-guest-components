@@ -18,6 +18,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions: {}
+
 jobs:
   crypto_ci:
     permissions:
@@ -40,12 +42,12 @@ jobs:
 
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: audit
 
       - name: Code checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 1
@@ -59,7 +61,11 @@ jobs:
         run: cargo fmt -p crypto -- --check
 
       - name: Run rust lint check (${{ matrix.suites }})
-        run: cargo clippy -p crypto --no-default-features --features ${{ matrix.suites }} -- -D warnings
+        env:
+          SUITES: ${{ matrix.suites }}
+        run: cargo clippy -p crypto --no-default-features --features ${SUITES} -- -D warnings
 
       - name: Run cargo test (${{ matrix.suites }})
-        run: cargo test -p crypto --no-default-features --features ${{ matrix.suites }}
+        env:
+          SUITES: ${{ matrix.suites }}
+        run: cargo test -p crypto --no-default-features --features ${SUITES}

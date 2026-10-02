@@ -12,6 +12,11 @@ use image_rs::config::ImageConfig;
 use serde::Deserialize;
 use tracing::debug;
 
+#[cfg(any(feature = "ttrpc", feature = "grpc"))]
+mod ocicrypt_config;
+#[cfg(any(feature = "ttrpc", feature = "grpc"))]
+pub use ocicrypt_config::OCICRYPT_KEYPROVIDER_CONFIG_ENV;
+
 cfg_if::cfg_if! {
     if #[cfg(feature = "ttrpc")] {
         pub const DEFAULT_CDH_SOCKET_ADDR: &str = "unix:///run/confidential-containers/cdh.sock";
@@ -20,6 +25,8 @@ cfg_if::cfg_if! {
     }
 }
 
+pub const DEFAULT_AA_SOCKET_ADDR: &str =
+    "unix:///run/confidential-containers/attestation-agent/attestation-agent.sock";
 pub const DEFAULT_LOG_LEVEL: &str = "info";
 
 #[derive(Clone, Deserialize, Debug, PartialEq)]
@@ -69,6 +76,24 @@ impl Default for LogConfig {
     }
 }
 
+fn default_aa_socket_addr() -> String {
+    DEFAULT_AA_SOCKET_ADDR.to_string()
+}
+
+#[derive(Clone, Deserialize, Debug, PartialEq)]
+pub struct AaConfig {
+    #[serde(default = "default_aa_socket_addr")]
+    pub aa_socket: String,
+}
+
+impl Default for AaConfig {
+    fn default() -> Self {
+        Self {
+            aa_socket: DEFAULT_AA_SOCKET_ADDR.to_string(),
+        }
+    }
+}
+
 fn default_socket_addr() -> String {
     DEFAULT_CDH_SOCKET_ADDR.to_string()
 }
@@ -76,6 +101,9 @@ fn default_socket_addr() -> String {
 #[derive(Clone, Deserialize, Debug, PartialEq)]
 pub struct CdhConfig {
     pub kbc: KbsConfig,
+
+    #[serde(default)]
+    pub aa: AaConfig,
 
     #[serde(default)]
     pub credentials: Vec<Credential>,
@@ -108,6 +136,7 @@ impl CdhConfig {
     pub fn default_with_kernel_cmdline() -> Result<Self> {
         Ok(Self {
             kbc: KbsConfig::new()?,
+            aa: AaConfig::default(),
             credentials: Vec::new(),
             socket: default_socket_addr(),
             image: ImageConfig::from_kernel_cmdline(),
@@ -121,6 +150,7 @@ impl CdhConfig {
     pub fn from_file(config_path: &str) -> Result<Self> {
         let c = Config::builder()
             .set_default("socket", DEFAULT_CDH_SOCKET_ADDR)?
+            .set_default("aa.aa_socket", DEFAULT_AA_SOCKET_ADDR)?
             .set_default("kbc.url", "")?
             .add_source(File::with_name(config_path))
             .build()?;
@@ -166,12 +196,15 @@ impl CdhConfig {
 }
 
 impl CdhConfig {
-    pub fn set_configuration_envs(&self) {
+    pub fn set_configuration_envs(&self) -> Result<()> {
         if env::var("AA_KBC_PARAMS").is_err() {
             env::set_var(
                 "AA_KBC_PARAMS",
                 format!("{}::{}", self.kbc.name, self.kbc.url),
             );
+        }
+        if env::var("AA_SOCKET").is_err() {
+            env::set_var("AA_SOCKET", &self.aa.aa_socket);
         }
         // KBS configurations
         if let Some(kbs_cert) = &self.kbc.kbs_cert {
@@ -181,6 +214,14 @@ impl CdhConfig {
         if self.skip_sealed_secret_verification {
             env::set_var("SKIP_SEALED_SECRET_VERIFICATION", "true");
         }
+
+        // Only meaningful when an RPC server exposing the KeyProvider service
+        // is compiled in. Library-only builds (e.g. cdh-oneshot) have no
+        // UnwrapKey RPC listener, so a generated config would point ocicrypt-rs
+        // at a socket nobody serves.
+        #[cfg(any(feature = "ttrpc", feature = "grpc"))]
+        self.ensure_ocicrypt_keyprovider_config()?;
+        Ok(())
     }
 }
 
@@ -195,12 +236,18 @@ mod tests {
     use rstest::rstest;
     use serial_test::serial;
 
-    use crate::{config::DEFAULT_CDH_SOCKET_ADDR, CdhConfig, KbsConfig, LogConfig};
+    use crate::{
+        config::DEFAULT_AA_SOCKET_ADDR, config::DEFAULT_CDH_SOCKET_ADDR, AaConfig, CdhConfig,
+        KbsConfig, LogConfig,
+    };
 
     #[rstest]
     #[case(
         r#"
 socket = "unix:///run/confidential-containers/cdh.sock"
+
+[aa]
+aa_socket = "unix:///run/confidential-containers/attestation-agent/attestation-agent.sock"
 
 [kbc]
 name = "offline_fs_kbc"
@@ -231,6 +278,7 @@ https_proxy = "http://127.0.0.1:8080"
     "#,
         Some(CdhConfig {
             log: LogConfig::default(),
+            aa: AaConfig::default(),
             kbc: KbsConfig {
                 name: "offline_fs_kbc".to_string(),
                 url: "".to_string(),
@@ -291,6 +339,7 @@ name = "offline_fs_kbc"
 "#,
     Some(CdhConfig {
         log: LogConfig::default(),
+        aa: AaConfig::default(),
         kbc: KbsConfig {
             name: "offline_fs_kbc".to_string(),
             url: "".to_string(),
@@ -323,6 +372,9 @@ some_undefined_field = "unknown value"
         log: LogConfig {
             level: "warn".to_string(),
         },
+        aa: AaConfig {
+            aa_socket: DEFAULT_AA_SOCKET_ADDR.to_string(),
+        },
         kbc: KbsConfig {
             name: "offline_fs_kbc".to_string(),
             url: "".to_string(),
@@ -338,6 +390,42 @@ some_undefined_field = "unknown value"
         },
         socket: DEFAULT_CDH_SOCKET_ADDR.to_string(),
         skip_sealed_secret_verification: false,
+    })
+    )]
+    #[case(
+        r#"
+[kbc]
+name = "offline_fs_kbc"
+
+[image]
+image_security_policy = """
+{
+    "default": [
+        {
+            "type": "reject"
+        }
+    ]
+}
+"""
+"#,
+    Some(CdhConfig {
+        log: LogConfig::default(),
+        kbc: KbsConfig {
+            name: "offline_fs_kbc".to_string(),
+            url: "".to_string(),
+            kbs_cert: None,
+        },
+        credentials: vec![],
+        image: ImageConfig {
+                image_security_policy: Some(
+                    "{\n    \"default\": [\n        {\n            \"type\": \"reject\"\n        }\n    ]\n}\n"
+                        .to_string(),
+                ),
+                ..Default::default()
+        },
+        socket: DEFAULT_CDH_SOCKET_ADDR.to_string(),
+        skip_sealed_secret_verification: false,
+        aa: AaConfig::default(),
     })
     )]
     #[serial]

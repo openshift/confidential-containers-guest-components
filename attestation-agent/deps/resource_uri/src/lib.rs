@@ -7,7 +7,7 @@
 //! obtained from `get_resource` endpoint. Also, `kid` field in an
 //! [`super::AnnotationPacket`] of `decrypt_payload` should also follow this.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 const RESOURCE_ID_ERROR_INFO: &str =
@@ -53,11 +53,11 @@ impl TryFrom<url::Url> for ResourceUri {
     fn try_from(value: url::Url) -> Result<Self, Self::Error> {
         let mut kbs_address = value.host_str().unwrap_or_default().to_string();
 
-        if !kbs_address.is_empty() {
-            if let Some(port) = value.port() {
-                kbs_address += ":";
-                kbs_address += &port.to_string();
-            }
+        if !kbs_address.is_empty()
+            && let Some(port) = value.port()
+        {
+            kbs_address += ":";
+            kbs_address += &port.to_string();
         }
 
         let scheme = value.scheme();
@@ -278,8 +278,7 @@ mod tests {
 
         // Conversion to Url
         let url_from_string = url::Url::try_from(url).expect("failed to parse url");
-        let url_from_resource: url::Url =
-            resource.clone().try_into().expect("failed to try into url");
+        let url_from_resource: url::Url = resource.clone().into();
         assert_eq!(url_from_string, url_from_resource);
 
         // Conversion to ResourceUri

@@ -12,6 +12,10 @@
 #   * packed into a "FROM scratch" OCI container image (see Dockerfile), and
 #   * turned into an EROFS + dm-verity disk image (see build-erofs-image.sh).
 #
+# The binaries and the bundled cryptsetup are linked against the host's glibc,
+# and the extension ships no libc of its own, so this script is meant to run
+# inside the builder image (Dockerfile.builder) rather than on the CI runner.
+#
 # The layout mirrors what kata-containers' kata-deploy-binaries.sh
 # (install_image_coco_extension) produces, so the resulting image is a drop-in
 # for kata's own rootfs-image-coco-extension asset:
@@ -36,21 +40,21 @@ repo_root_dir="$(cd "${script_dir}/../.." && pwd)"
 # Target selection. Defaults match a native x86_64 build; the CI workflow
 # overrides these per architecture.
 ARCH="${ARCH:-$(uname -m)}"
-LIBC="${LIBC:-musl}"
+LIBC="${LIBC:-gnu}"
 
-# Attesters and resource providers compiled into the guest components. These are
-# architecture specific (e.g. tdx/snp attesters only build on x86_64, se-attester
-# only on s390x), so the caller is expected to set ATTESTER accordingly.
+# Attesters compiled into the guest components. These are architecture specific
+# (e.g. tdx/snp attesters only build on x86_64, se-attester only on s390x), so
+# the caller is expected to set ATTESTER accordingly.
 ATTESTER="${ATTESTER:-none}"
 NV_ATTESTER="${NV_ATTESTER:-${ATTESTER},nvidia-attester}"
-RESOURCE_PROVIDER="${RESOURCE_PROVIDER:-kbs}"
+# Optional: set ENABLE_KBS=false to build without cc_kbc. Default is enabled.
 INCLUDE_NVIDIA_ATTESTER="${INCLUDE_NVIDIA_ATTESTER:-auto}"
 INCLUDE_CRYPTSETUP="${INCLUDE_CRYPTSETUP:-yes}"
 NVAT_LIB_DIR="${NVAT_LIB_DIR:-/usr/local/lib}"
 
 # TEE_PLATFORM is intentionally left empty so the top-level Makefile does not
-# override the ATTESTER/RESOURCE_PROVIDER values passed in the environment. This
-# mirrors kata's build-static-coco-guest-components.sh.
+# override the ATTESTER value passed in the environment. This mirrors kata's
+# build-static-coco-guest-components.sh.
 TEE_PLATFORM="${TEE_PLATFORM:-}"
 
 # Pause image to bundle. Kept in sync with kata's versions.yaml (.externals.pause).
@@ -79,7 +83,7 @@ build_guest_components() {
 		ARCH="${ARCH}" \
 		LIBC="${LIBC}" \
 		ATTESTER="${ATTESTER}" \
-		RESOURCE_PROVIDER="${RESOURCE_PROVIDER}"
+		${ENABLE_KBS:+ENABLE_KBS="${ENABLE_KBS}"}
 
 	# Strip to keep the extension image small; the debug info is not shippable.
 	local strip_bin="strip"
@@ -111,12 +115,12 @@ copy_non_glibc_library_closure() {
 
 		dep_name="$(basename "${dep_path}")"
 		case "${dep_name}" in
-			ld-linux-*|libc.so.*|libdl.so.*|libm.so.*|libpthread.so.*|librt.so.*)
+			ld-linux-*|libc.so.*|libdl.so.*|libm.so.*|libpthread.so.*|librt.so.*|linux-vdso*)
 				continue
 				;;
 		esac
 
-		cp -a "${dep_path}" "${dest_dir}/"
+		install -D -m0755 "${dep_path}" "${dest_dir}/${dep_name}"
 	done < <(ldd "${lib}")
 }
 
@@ -136,7 +140,7 @@ build_nvidia_attestation_agent() {
 	[[ -e "${NVAT_LIB_DIR}/libnvat.so" || -e "${NVAT_LIB_DIR}/libnvat.so.1" ]] || \
 		die "NVIDIA SDK libnvat.so not found in ${NVAT_LIB_DIR}"
 
-	info "Building NVIDIA attester variant (ATTESTER=${NV_ATTESTER})"
+	info "Building NVIDIA attester variant (ATTESTER=${NV_ATTESTER} LIBC=${LIBC})"
 	rm -f "${build_dir}/attestation-agent"
 
 	NVAT_USE_SYSTEM_LIB=1 \

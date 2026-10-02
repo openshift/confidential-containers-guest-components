@@ -5,16 +5,16 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::LazyLock;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use base64::Engine;
 
 use crate::blockcipher::{
-    EncryptionFinalizer, LayerBlockCipherHandler, LayerBlockCipherOptions,
-    PrivateLayerBlockCipherOptions, PublicLayerBlockCipherOptions, AES256CTR,
+    AES256CTR, EncryptionFinalizer, LayerBlockCipherHandler, LayerBlockCipherOptions,
+    PrivateLayerBlockCipherOptions, PublicLayerBlockCipherOptions,
 };
 use crate::config::{DecryptConfig, EncryptConfig};
 use crate::keywrap::KeyWrapper;
-use crate::{get_key_wrapper, KEY_WRAPPERS_ANNOTATIONS};
+use crate::{KEY_WRAPPERS_ANNOTATIONS, get_key_wrapper};
 
 static DEFAULT_ANNOTATION_MAP: LazyLock<BTreeMap<String, String>> = LazyLock::new(BTreeMap::new);
 
@@ -211,11 +211,11 @@ pub fn encrypt_layer<'a, R: 'a + Read>(
     annotations: Option<&BTreeMap<String, String>>,
     digest: &str,
 ) -> Result<(
-    Option<impl Read + EncryptionFinalizer + 'a>,
+    Option<impl Read + EncryptionFinalizer + 'a + use<'a, R>>,
     EncLayerFinalizer,
 )> {
     let mut encrypted = false;
-    for (annotations_id, _scheme) in KEY_WRAPPERS_ANNOTATIONS.iter() {
+    for annotations_id in KEY_WRAPPERS_ANNOTATIONS.keys() {
         let anno = annotations.unwrap_or(&DEFAULT_ANNOTATION_MAP);
         if anno.contains_key(annotations_id) {
             if let Some(decrypt_config) = ec.decrypt_config.as_ref() {
@@ -254,7 +254,7 @@ pub fn decrypt_layer<R: Read>(
     layer_reader: R,
     annotations: Option<&BTreeMap<String, String>>,
     unwrap_only: bool,
-) -> Result<(Option<impl Read>, String)> {
+) -> Result<(Option<impl Read + use<R>>, String)> {
     let priv_opts_data = decrypt_layer_key_opts_data(dc, annotations)?;
     let annotations = annotations.unwrap_or(&DEFAULT_ANNOTATION_MAP);
     let pub_opts_data = get_layer_pub_opts(annotations)?;
@@ -284,7 +284,7 @@ pub fn async_decrypt_layer<R: tokio::io::AsyncRead + Send>(
     layer_reader: R,
     annotations: Option<&BTreeMap<String, String>>,
     priv_opts_data: &[u8],
-) -> Result<(impl tokio::io::AsyncRead + Send, String)> {
+) -> Result<(impl tokio::io::AsyncRead + Send + use<R>, String)> {
     let annotations = annotations.unwrap_or(&DEFAULT_ANNOTATION_MAP);
     let pub_opts_data = get_layer_pub_opts(annotations)?;
     let pub_opts: PublicLayerBlockCipherOptions = serde_json::from_slice(&pub_opts_data)?;
@@ -304,15 +304,12 @@ pub fn async_decrypt_layer<R: tokio::io::AsyncRead + Send>(
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
-    use std::env;
     use std::fs;
     use std::path::PathBuf;
 
     #[test]
     fn test_encrypt_decrypt_layer() {
         let path = load_data_path();
-        let test_conf_path = format!("{}/{}", path, "ocicrypt_config.json");
-        env::set_var("OCICRYPT_KEYPROVIDER_CONFIG", test_conf_path);
 
         let pub_key_file = format!("{}/{}", path, "public_key.pem");
         let pub_key = fs::read(pub_key_file).unwrap();
@@ -325,9 +322,10 @@ mod tests {
         assert!(ec.encrypt_with_jwe(vec![pub_key]).is_ok());
 
         let mut dc = DecryptConfig::default();
-        assert!(dc
-            .decrypt_with_priv_keys(vec![priv_key.to_vec()], vec![vec![]])
-            .is_ok());
+        assert!(
+            dc.decrypt_with_priv_keys(vec![priv_key.to_vec()], vec![vec![]])
+                .is_ok()
+        );
 
         let layer_data: Vec<u8> = b"This is some text!".to_vec();
         let digest = Sha256::digest(&layer_data);
@@ -362,8 +360,6 @@ mod tests {
     #[tokio::test]
     async fn test_async_decrypt_layer() {
         let path = load_data_path();
-        let test_conf_path = format!("{}/{}", path, "ocicrypt_config.json");
-        env::set_var("OCICRYPT_KEYPROVIDER_CONFIG", &test_conf_path);
 
         let pub_key_file = format!("{}/{}", path, "public_key.pem");
         let pub_key = fs::read(&pub_key_file).unwrap();
@@ -375,9 +371,10 @@ mod tests {
         assert!(ec.encrypt_with_jwe(vec![pub_key]).is_ok());
 
         let mut dc = DecryptConfig::default();
-        assert!(dc
-            .decrypt_with_priv_keys(vec![priv_key.to_vec()], vec![vec![]])
-            .is_ok());
+        assert!(
+            dc.decrypt_with_priv_keys(vec![priv_key.to_vec()], vec![vec![]])
+                .is_ok()
+        );
 
         let layer_data: Vec<u8> = b"This is some text!".to_vec();
         let digest = Sha256::digest(&layer_data);

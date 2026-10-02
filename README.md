@@ -27,16 +27,13 @@ CoCo Keyprovider. Used to encrypt the container images.
 
 ## Tools
 
-[secret-cli](confidential-data-hub/hub/src/bin/secret_cli.rs)
+[secret-cli](confidential-data-hub/docs/SEALED_SECRET.md)
 Utility for sealing and unsealing sealed secrets
 
-[CDH Client](confidential-data-hub/hub/src/bin)
+[CDH Client](confidential-data-hub/README.md#client-tool)
 A tool for exercising CDH endpoints
 
-[CDH Go Client](confidential-data-hub/golang)
-A Go tool for exercising CDH endpoints
-
-[CDH (One Shot)](confidential-data-hub/hub/src/bin/cdh-oneshot.rs)
+[CDH (One Shot)](confidential-data-hub)
 One Shot version of CDH
 
 [CoCo Keyprovider](attestation-agent/coco_keyprovider)
@@ -57,16 +54,16 @@ The `TEE_PLATFORM` parameter can be
 - `fs`: for platforms with encrypted root filesystems (i.e. s390x)
 - `tdx`: for Intel TDX
 - `az-tdx-vtpm`: for Intel TDX with Azure vTPM
-- `snp`: for AMD SEV-SNP
-- `amd`: for both AMD SEV(-ES) and AMD SEV-SNP
+- `snp`/`amd`: for AMD SEV-SNP
 - `az-snp-vtpm`: for AMD SEV-SNP with Azure vTPM
 - `se`: for IBM Secure Execution (SE)
 
-by default, `kbs`/`sev` as a resource provider will be built in Confidential Data Hub. If you do not want enable any
-default except for only builtin `offline-fs-kbc`, you can build with `NO_RESOURCE_PROVIDER` flag set to `true`.
+By default, the `kbs` feature (`cc_kbc` / CoCo KBS) is enabled in Confidential
+Data Hub. `offline_fs_kbc` is always built. To build without `cc_kbc`, set
+`ENABLE_KBS=false`:
 
 ```shell
-make build TEE_PLATFORM=$(TEE_PLATFORM) NO_RESOURCE_PROVIDER=true
+make build TEE_PLATFORM=$(TEE_PLATFORM) ENABLE_KBS=false
 ```
 
 ### Optional build parameters

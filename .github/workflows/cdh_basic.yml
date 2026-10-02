@@ -24,6 +24,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions: {}
+
 jobs:
   basic_ci:
     permissions:
@@ -43,12 +45,12 @@ jobs:
     runs-on: ${{ matrix.instance }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: audit
 
       - name: Code checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 1
@@ -65,7 +67,7 @@ jobs:
       - name: Build and install
         run: |
           mkdir -p ${HOME}/.local/bin
-          LIBC=gnu make RESOURCE_PROVIDER=kbs,sev && LIBC=gnu make install PREFIX=${HOME}/.local
+          LIBC=gnu make && LIBC=gnu make install PREFIX=${HOME}/.local
 
       - name: Run cargo fmt check
         run: cargo fmt -p kms -p confidential-data-hub -- --check
@@ -75,4 +77,4 @@ jobs:
 
       - name: Run cargo test
         run: |
-          sudo -E PATH=$PATH -s RUST_LOG=warn cargo test --features kbs,aliyun,sev,bin -p kms -p confidential-data-hub -- --nocapture
+          sudo -E PATH=$PATH -s RUST_LOG=warn cargo test --features kbs,aliyun,bin -p kms -p confidential-data-hub -- --nocapture

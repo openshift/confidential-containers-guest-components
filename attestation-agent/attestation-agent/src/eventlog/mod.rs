@@ -7,13 +7,13 @@ pub mod tcg2;
 
 use std::{
     fmt::Display,
-    fs::{remove_file, File},
+    fs::{File, remove_file},
     io::{Read, Seek, SeekFrom, Write},
     path::Path,
     sync::Arc,
 };
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use attester::BoxedAttester;
 use const_format::concatcp;
 
@@ -49,9 +49,24 @@ pub struct FileWriter {
     pos: u64,
 }
 
+impl FileWriter {
+    /// Open the log file for writing, positioned at its end. No `O_APPEND`,
+    /// so that recovery can rewrite an entry at its recorded offset.
+    fn open(path: &Path) -> Result<Self> {
+        let mut file = File::options()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .context("open log file")?;
+        let pos = file.seek(SeekFrom::End(0))?;
+        Ok(Self { file, pos })
+    }
+}
+
 impl Writer for FileWriter {
     fn write(&mut self, data: &[u8]) -> Result<()> {
-        self.file.write(data).context("failed to write log")?;
+        self.file.write_all(data).context("failed to write log")?;
         self.file
             .sync_data()
             .context("failed to flush log to I/O media")?;
@@ -85,27 +100,33 @@ struct WalCache {
 }
 
 impl EventLog {
+    /// Serialize an AAEL event into TCG2 entry bytes and its digest.
+    fn serialize_tcg2_event(event: Event<'_>, rtmr: u64, alg: HashAlgorithm) -> (Vec<u8>, Vec<u8>) {
+        let (tcg2_event, digest) = Into::<Tcg2EventEntry>::into(event)
+            .with_target_measurement_register(rtmr as u32)
+            .digest(alg);
+        (tcg2_event.to_le_bytes(), digest)
+    }
+
     pub async fn new(rtmr_extender: Arc<BoxedAttester>, pcr: u64) -> Result<Self> {
         tokio::fs::create_dir_all(EVENTLOG_PARENT_DIR_PATH)
             .await
             .context("create eventlog parent dir")?;
-        let mut file = File::options()
-            .append(true)
-            .create(true)
-            .open(EVENTLOG_PATH)
-            .context("open AAEL file")?;
-        let pos = file.stream_position()?;
-
-        let mut writer = Box::new(FileWriter { file, pos });
+        let mut writer =
+            Box::new(FileWriter::open(Path::new(EVENTLOG_PATH)).context("open AAEL file")?);
         let alg = rtmr_extender.ccel_hash_algorithm();
         // if any WAL cache file exists, we should handle recovering from crash
         match Self::read_wal_cache(alg.digest_len()) {
             Ok(Some(wal_cache)) => {
                 warn!("Recover from a previous crash.");
-                let current_pcr = rtmr_extender.get_runtime_measurement(pcr).await.context("get runtime measurement")?;
+                let current_pcr = rtmr_extender
+                    .get_runtime_measurement(pcr)
+                    .await
+                    .context("get runtime measurement")?;
                 let aael_event = Event::try_from(&wal_cache.event_data[..])?;
-                let (tcg2_event, tcg2_event_digest) = Into::<Tcg2EventEntry>::into(aael_event).digest(alg);
-                let tcg2_event_data = tcg2_event.to_le_bytes();
+                let rtmr = rtmr_extender.pcr_to_ccmr(pcr);
+                let (tcg2_event_data, tcg2_event_digest) =
+                    Self::serialize_tcg2_event(aael_event, rtmr, alg);
 
                 // if the PCR has not been extended yet, we should just write eventlog
                 if current_pcr != wal_cache.expected_pcr {
@@ -115,11 +136,15 @@ impl EventLog {
                     let digest_to_be_updated = alg.digest(&pcr_status);
 
                     if digest_to_be_updated != wal_cache.expected_pcr {
-                        bail!("fatal error when recovering. The eventlog file {EVENTLOG_PATH} is probably corrupted, or other process has extend the target PCR {pcr}.")
+                        bail!(
+                            "fatal error when recovering. The eventlog file {EVENTLOG_PATH} is probably corrupted, or other process has extend the target PCR {pcr}."
+                        )
                     }
 
                     // else, update the PCR
-                    rtmr_extender.extend_runtime_measurement(tcg2_event_digest, pcr).await?;
+                    rtmr_extender
+                        .extend_runtime_measurement(tcg2_event_digest, pcr)
+                        .await?;
                 }
 
                 writer.seek(wal_cache.event_offset)?;
@@ -132,13 +157,15 @@ impl EventLog {
                     pcr,
                 })
             }
-            Err(_) => bail!("Failed to read wal cache. This is a significant error caused by a previous crash. Please try delete `{WAL_CACHE}` and restart the attestation agent."),
+            Err(_) => bail!(
+                "Failed to read wal cache. This is a significant error caused by a previous crash. Please try delete `{WAL_CACHE}` and restart the attestation agent."
+            ),
             Ok(None) => Ok(Self {
                 writer,
                 rtmr_extender,
                 alg,
                 pcr,
-            })
+            }),
         }
     }
 
@@ -161,13 +188,17 @@ impl EventLog {
 
     /// Try to read the wal cache file.
     fn read_wal_cache(digest_len: usize) -> Result<Option<WalCache>> {
-        if !Path::new(WAL_CACHE).exists() {
+        Self::read_wal_cache_from(Path::new(WAL_CACHE), digest_len)
+    }
+
+    fn read_wal_cache_from(path: &Path, digest_len: usize) -> Result<Option<WalCache>> {
+        if !path.exists() {
             return Ok(None);
         }
-        let mut file = File::open(WAL_CACHE)?;
+        let mut file = File::open(path)?;
         let mut event_offset = [0u8; 8];
         file.read_exact(&mut event_offset)?;
-        let event_offset = u64::from_le_bytes(event_offset);
+        let event_offset = u64::from_be_bytes(event_offset);
 
         let mut expected_pcr = vec![0u8; digest_len];
         file.read_exact(&mut expected_pcr)?;
@@ -197,11 +228,7 @@ impl EventLog {
     pub async fn extend_entry(&mut self, log_entry: Event<'_>, pcr: u64) -> Result<()> {
         let aael_event_data = log_entry.to_string();
         let rtmr = self.rtmr_extender.pcr_to_ccmr(self.pcr);
-        let (tcg2_event, event_digest) = Into::<Tcg2EventEntry>::into(log_entry)
-            .with_target_measurement_register(rtmr as u32)
-            .digest(self.alg);
-
-        let tcg2_event_data = tcg2_event.to_le_bytes();
+        let (tcg2_event_data, event_digest) = Self::serialize_tcg2_event(log_entry, rtmr, self.alg);
         let mut current_pcr = self.rtmr_extender.get_runtime_measurement(pcr).await?;
 
         current_pcr.extend_from_slice(&event_digest);
@@ -317,6 +344,38 @@ mod tests {
     }
 
     #[test]
+    fn test_wal_cache_offset_is_big_endian() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wal_path = tmp.path().join("wal_cache");
+
+        let mut raw = vec![0u8, 0, 0, 0, 0, 0, 2, 0];
+        raw.extend_from_slice(&[0xab; 32]);
+        raw.extend_from_slice(b"domain operation content");
+        std::fs::write(&wal_path, raw).unwrap();
+
+        let wal_cache = EventLog::read_wal_cache_from(&wal_path, 32)
+            .unwrap()
+            .unwrap();
+        assert_eq!(wal_cache.event_offset, 512);
+        assert_eq!(wal_cache.expected_pcr, vec![0xab; 32]);
+        assert_eq!(wal_cache.event_data, "domain operation content");
+    }
+
+    #[test]
+    fn test_file_writer_reopen_and_rewrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("eventlog");
+        std::fs::write(&log_path, b"0123456789").unwrap();
+
+        let mut writer = FileWriter::open(&log_path).unwrap();
+        assert_eq!(writer.current_pos(), 10);
+
+        writer.seek(2).unwrap();
+        writer.write(b"AB").unwrap();
+        assert_eq!(std::fs::read(&log_path).unwrap(), b"01AB456789");
+    }
+
+    #[test]
     fn test_content() {
         let a_str = "hello";
         let _: Content = a_str.try_into().unwrap();
@@ -380,8 +439,20 @@ mod tests {
         "46df8dacf00a07d34a83cdf56d7978697790787cf2ba1432ef7c38f22cd96351",
         HashAlgorithm::Sha256
     )]
-    #[case("domain", "operation", "content", "dad5f0e226318ffa9839b75a472c6aa7fdb5834949d0a0a22990cf04d5692440fb00f3aa0609db7e49cd8d793f670d02", HashAlgorithm::Sha384)]
-    #[case("domain", "operation", "content", "b708d222ca8bd44dfe6ba0c4ca2cbb72379276fba8091025217064be45a813e5d6124ccf073219edb617d1faf007d55061465bdf34b7437dbdc9a7405bd4e9c0", HashAlgorithm::Sha512)]
+    #[case(
+        "domain",
+        "operation",
+        "content",
+        "dad5f0e226318ffa9839b75a472c6aa7fdb5834949d0a0a22990cf04d5692440fb00f3aa0609db7e49cd8d793f670d02",
+        HashAlgorithm::Sha384
+    )]
+    #[case(
+        "domain",
+        "operation",
+        "content",
+        "b708d222ca8bd44dfe6ba0c4ca2cbb72379276fba8091025217064be45a813e5d6124ccf073219edb617d1faf007d55061465bdf34b7437dbdc9a7405bd4e9c0",
+        HashAlgorithm::Sha512
+    )]
     fn test_event_digest(
         #[case] domain: &str,
         #[case] operation: &str,
