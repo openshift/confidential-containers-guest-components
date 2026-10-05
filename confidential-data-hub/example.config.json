@@ -1,5 +1,8 @@
 {
     "socket": "unix:///run/confidential-containers/cdh.sock",
+    "aa": {
+        "aa_socket": "unix:///run/confidential-containers/attestation-agent/attestation-agent.sock"
+    },
     "kbc": {
         "name": "cc_kbc",
         "url": "http://example.io:8080",
@@ -19,7 +22,9 @@
         "max_concurrent_layer_downloads_per_image": 3,
         "sigstore_config_uri": "kbs:///default/sigstore-config/test",
         "image_security_policy_uri": "kbs:///default/security-policy/test",
+        "image_security_policy": "{\"default\":[{\"type\": \"reject\"}]}",
         "authenticated_registry_credentials_uri": "kbs:///default/credential/test",
+        "anonymous_fallback_on_unauthorized": false,
         "registry_configuration_uri": "kbs:///default/registry-configuration/test",
         "registry_config": {
             "unqualified-search-registries": [

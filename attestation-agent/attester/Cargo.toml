@@ -3,7 +3,7 @@ name = "attester"
 version = "0.1.0"
 authors = ["The Attestation Agent Authors"]
 publish = false
-edition = "2021"
+edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
@@ -15,15 +15,15 @@ az-snp-vtpm = { version = "0.8.1", default-features = false, features = [
 az-tdx-vtpm = { version = "0.8.1", default-features = false, features = [
     "attester",
 ], optional = true }
-azure-guest-attestation-sdk = { git = "https://github.com/Azure/azure-guest-attestation-sdk", rev = "e606728446cb66d681913983cbe5563c919dd94b", optional = true }
+azure-guest-attestation-sdk = { git = "https://github.com/Azure/azure-guest-attestation-sdk", rev = "9c8344cbeeb2c7ab46c1311e983f254a69ab5eec", optional = true }
+azure-tpm = { git = "https://github.com/Azure/azure-guest-attestation-sdk", rev = "9c8344cbeeb2c7ab46c1311e983f254a69ab5eec", optional = true }
 base64.workspace = true
 clap = { workspace = true, features = ["derive"], optional = true }
 cfg-if.workspace = true
 crypto.path = "../deps/crypto"
 hex.workspace = true
-iocuddle = { version = "0.2.0", optional = true }
+iocuddle = { version = "0.3.0", optional = true }
 kbs-types.workspace = true
-nv-attestation-sdk = { path = "../nvidia-attestation-sdk/nv-attestation-sdk-rust/nv-attestation-sdk", optional = true }
 occlum_dcap = { git = "https://github.com/occlum/occlum", tag = "v0.29.7", optional = true }
 pem-rfc7468 = { version = "1", optional = true, features = ["alloc"] }
 pv = { version = "0.12.0", package = "s390_pv", optional = true }
@@ -39,7 +39,7 @@ sev = { version = "6.3.1", default-features = false, features = [
 ], optional = true }
 sha2.workspace = true
 strum.workspace = true
-tdx-attest-rs = { git = "https://github.com/intel/confidential-computing.tee.dcap", tag = "DCAP_1.26", optional = true }
+tdx-attest-rs = { git = "https://github.com/intel/confidential-computing.tee.dcap", tag = "DCAP_1.27.101", optional = true }
 thiserror.workspace = true
 csv-rs = { version = "0.1.0", optional = true }
 codicon = { version = "3.0", optional = true }
@@ -50,15 +50,22 @@ tempfile = { workspace = true, optional = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
 num-traits = { version = "0.2" }
+p384 = { version = "0.13", features = ["ecdsa"], optional = true }
 picky-asn1 = { version = "0.10.1", optional = true }
 picky-asn1-der = { version = "0.5.6", optional = true }
 picky-asn1-x509 = { version = "0.15.4", optional = true }
 tss-esapi = { version = "7.5", optional = true }
-zerocopy = { version = "0.8.54", optional = true }
+zerocopy = { version = "0.8.54", optional = true, features = ["derive"] }
 
 [dev-dependencies]
 tokio.workspace = true
 rstest.workspace = true
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+# When bumping this tag, check the crate's release notes on GitHub for its
+# corresponding libnvat/libnvat-dev version, and update the `version` input
+# default in .github/actions/install-nvat-sdk/action.yml to match.
+nv-attestation-sdk = { path = "../nvidia-attestation-sdk/nv-attestation-sdk-rust/nv-attestation-sdk", optional = true }
 
 [[bin]]
 name = "evidence_getter"
@@ -66,8 +73,10 @@ required-features = ["bin"]
 
 [features]
 default = ["all-attesters"]
+
 all-attesters = [
     "tdx-attester",
+    "sgx-attester",
     "az-snp-vtpm-attester",
     "az-tdx-vtpm-attester",
     "snp-attester",
@@ -76,19 +85,27 @@ all-attesters = [
     "cca-attester",
     "se-attester",
     "tpm-attester",
+    "nvidia-attester",
+    "nvidia-dpu-attester",
 ]
 
 # tsm-report enables a module that helps attesters to use Linux TSM_REPORTS for generating
 # quotes. It's an unconditional dependency for tdx-attester since that is the preferred way to
 # generate TDX quotes with upstream kernels.
 tsm-report = ["tempfile"]
-tdx-attester = ["scroll", "tsm-report", "iocuddle"]
+tdx-attester = ["scroll", "tsm-report", "iocuddle", "zerocopy"]
 tdx-attest-dcap-ioctls = ["tdx-attest-rs"]
 sgx-attester = ["occlum_dcap"]
 nvidia-attester = ["nv-attestation-sdk"]
-az-snp-vtpm-attester = ["az-snp-vtpm", "pem-rfc7468"]
-az-tdx-vtpm-attester = ["az-snp-vtpm-attester", "az-tdx-vtpm", "azure-guest-attestation-sdk", "zerocopy"]
-snp-attester = ["sev"]
+nvidia-dpu-attester = ["p384"]
+az-snp-vtpm-attester = ["az-snp-vtpm", "pem-rfc7468", "azure-tpm"]
+az-tdx-vtpm-attester = [
+    "az-snp-vtpm-attester",
+    "az-tdx-vtpm",
+    "azure-guest-attestation-sdk",
+    "zerocopy",
+]
+snp-attester = ["sev", "tsm-report"]
 csv-attester = ["hygon", "codicon", "hyper", "hyper-tls"]
 hygon-dcu-attester = ["hygon"]
 hygon = ["csv-rs"]

@@ -30,7 +30,8 @@ ifeq ($(ARCH), $(filter $(ARCH), s390x powerpc64le))
 else
     LIBC ?= musl
 endif
-RESOURCE_PROVIDER ?= kbs,sev
+# Enable the `kbs` cargo feature (cc_kbc / CoCo KBS). offline_fs_kbc is always built.
+ENABLE_KBS ?= true
 KMS_PROVIDER ?= aliyun
 DESTDIR ?= $(PREFIX)/bin
 RUSTFLAGS_ARGS ?=
@@ -52,8 +53,8 @@ else
     binary_name = grpc-cdh
 endif
 
-ifneq ($(RESOURCE_PROVIDER), none)
-    features += $(RESOURCE_PROVIDER)
+ifeq ($(ENABLE_KBS), true)
+    features += kbs
 endif
 
 ifneq ($(KMS_PROVIDER), none)
@@ -107,6 +108,13 @@ build:
 
 TARGET := $(TARGET_DIR)/$(BIN_NAME)
 
+lint:
+	cargo clippy -p kms -p confidential-data-hub -- -D warnings
+	cargo clippy -p kms -p confidential-data-hub --all-targets --features aws -- -D warnings
+
+test:
+	cargo test --features kbs,aliyun,bin -p kms -p confidential-data-hub -- --nocapture
+
 install: 
 	install -D -m0755 $(TARGET) $(DESTDIR)/$(BIN_NAME)
 
@@ -118,5 +126,5 @@ clean:
 
 help:
 	@echo "==========================Help========================================="
-	@echo "build: make [DEBUG=1] [LIBC=(musl)] [ARCH=(x86_64/s390x/ppc64le)] [RESOURCE_PROVIDER=(kbs/sev)] [KMS_PROVIDER=aliyun/aws/ehsm] [RPC=(ttrpc/grpc)]"
+	@echo "build: make [DEBUG=1] [LIBC=(musl)] [ARCH=(x86_64/s390x/ppc64le)] [ENABLE_KBS=(true/false)] [KMS_PROVIDER=aliyun/aws] [RPC=(ttrpc/grpc)]"
 	@echo "install: make install [DESTDIR=/path/to/target] [LIBC=(musl)]"

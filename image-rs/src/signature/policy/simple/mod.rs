@@ -79,7 +79,7 @@ impl SignatureValidator {
             (Some(_), Some(_)) => bail!("Both keyPath and keyData specified."),
             (None, Some(key_data)) => base64::engine::general_purpose::STANDARD.decode(key_data)?,
             (Some(key_path), None) => self
-                .resource_provider
+                ._resource_provider
                 .get_resource(key_path)
                 .await
                 .map_err(|e| {
@@ -156,7 +156,7 @@ impl SignatureValidator {
             .base_url(&image.reference)?
             .ok_or_else(|| anyhow!("The sigstore base url is none"))?;
 
-        let sigstore = format!("{}/{}", &sigstore_base_url, &sigstore_name);
+        let sigstore = format!("{sigstore_base_url}/{sigstore_name}");
         let sigstore_uri = url::Url::parse(&sigstore)
             .map_err(|e| anyhow!("Failed to parse sigstore_uri: {:?}", e))?;
 

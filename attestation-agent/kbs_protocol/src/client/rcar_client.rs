@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use async_trait::async_trait;
 use kbs_types::HashAlgorithm;
 use kbs_types::{
@@ -18,14 +18,14 @@ use serde_json::json;
 use tracing::{debug, warn};
 
 use crate::{
+    Error, Result,
     api::KbsClientCapabilities,
     client::{
-        ClientTee, KbsClient, KBS_GET_RESOURCE_MAX_ATTEMPT, KBS_PREFIX, KBS_PROTOCOL_VERSION,
+        ClientTee, KBS_GET_RESOURCE_MAX_ATTEMPT, KBS_PREFIX, KBS_PROTOCOL_VERSION, KbsClient,
     },
     evidence_provider::EvidenceProvider,
     keypair::TeeKeyPair,
     token_provider::Token,
-    Error, Result,
 };
 
 /// When executing get token, RCAR handshake should retry if failed to
@@ -37,6 +37,10 @@ const RCAR_RETRY_TIMEOUT_SECOND: u64 = 1;
 
 /// JSON object added to a 'Request's extra parameters.
 const SUPPORTED_HASH_ALGORITHMS_JSON_KEY: &str = "supported-hash-algorithms";
+
+/// JSON key in a 'Request's extra parameters with which the client selects
+/// the attestation policies that evaluate its evidence.
+const ATTESTATION_POLICY_SELECTOR_JSON_KEY: &str = "attestation-policy-selector";
 
 /// JSON object returned in the Challenge whose value is based on
 /// SUPPORTED_HASH_ALGORITHMS_JSON_KEY and the TEE.
@@ -54,10 +58,14 @@ struct AttestationResponseData {
     token: String,
 }
 
-async fn get_request_extra_params() -> serde_json::Value {
+async fn get_request_extra_params(attestation_policy_selector: Option<&str>) -> serde_json::Value {
     let supported_hash_algorithms = HashAlgorithm::list_all();
 
-    let extra_params = json!({SUPPORTED_HASH_ALGORITHMS_JSON_KEY: supported_hash_algorithms});
+    let mut extra_params = json!({SUPPORTED_HASH_ALGORITHMS_JSON_KEY: supported_hash_algorithms});
+
+    if let Some(attestation_policy_selector) = attestation_policy_selector {
+        extra_params[ATTESTATION_POLICY_SELECTOR_JSON_KEY] = json!(attestation_policy_selector);
+    }
 
     extra_params
 }
@@ -86,8 +94,8 @@ fn serialize_json_canonically<T: Serialize>(value: T) -> anyhow::Result<Vec<u8>>
     Ok(serde_json_canonicalizer::to_vec(&value)?)
 }
 
-async fn build_request(tee: Tee) -> Request {
-    let extra_params = get_request_extra_params().await;
+async fn build_request(tee: Tee, attestation_policy_selector: Option<&str>) -> Request {
+    let extra_params = get_request_extra_params(attestation_policy_selector).await;
 
     // Note that the Request includes the list of supported hash algorithms.
     // The Challenge response will return which TEE-specific algorithm should
@@ -133,7 +141,9 @@ impl KbsClient<Box<dyn EvidenceProvider>> {
                 Ok(_) => break,
                 Err(e) => {
                     if retry_count >= RCAR_MAX_ATTEMPT {
-                        return Err(Error::RcarHandshake(format!("Unable to get token. RCAR handshake retried {RCAR_MAX_ATTEMPT} times. Final attempt failed with: {e:?}")));
+                        return Err(Error::RcarHandshake(format!(
+                            "Unable to get token. RCAR handshake retried {RCAR_MAX_ATTEMPT} times. Final attempt failed with: {e:?}"
+                        )));
                     } else {
                         warn!("RCAR handshake failed: {e:?}, retry {retry_count}...");
                         retry_count += 1;
@@ -230,7 +240,7 @@ impl KbsClient<Box<dyn EvidenceProvider>> {
             ClientTee::_Initialized(tee) => *tee,
         };
 
-        let request = build_request(tee).await;
+        let request = build_request(tee, self._attestation_policy_selector.as_deref()).await;
 
         debug!("send auth request {request:?} to {auth_endpoint}");
 
@@ -401,24 +411,24 @@ impl KbsClientCapabilities for KbsClient<Box<dyn EvidenceProvider>> {
 mod test {
     use kbs_types::HashAlgorithm;
     use rstest::rstest;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::{env, path::PathBuf, time::Duration};
     use testcontainers::{
+        GenericImage, ImageExt,
         core::{IntoContainerPort, Mount},
         runners::AsyncRunner,
-        GenericImage, ImageExt,
     };
     use tokio::fs;
     use tokio::io::AsyncBufReadExt;
 
     use crate::{
-        evidence_provider::NativeEvidenceProvider, Error, KbsClientBuilder, KbsClientCapabilities,
+        Error, KbsClientBuilder, KbsClientCapabilities, evidence_provider::NativeEvidenceProvider,
     };
 
     use crate::client::rcar_client::{
-        build_request, get_hash_algorithm, get_request_extra_params, Result,
-        DEFAULT_HASH_ALGORITHM, KBS_PROTOCOL_VERSION, SELECTED_HASH_ALGORITHM_JSON_KEY,
-        SUPPORTED_HASH_ALGORITHMS_JSON_KEY,
+        ATTESTATION_POLICY_SELECTOR_JSON_KEY, DEFAULT_HASH_ALGORITHM, KBS_PROTOCOL_VERSION, Result,
+        SELECTED_HASH_ALGORITHM_JSON_KEY, SUPPORTED_HASH_ALGORITHMS_JSON_KEY, build_request,
+        get_hash_algorithm, get_request_extra_params,
     };
     use kbs_types::Tee;
 
@@ -529,7 +539,7 @@ mod test {
                     "Actual error: {e:#?}"
                 );
                 println!("NOTE: the test is skipped due to KBS protocol incompatibility.");
-                return ();
+                return;
             }
         };
 
@@ -540,12 +550,23 @@ mod test {
         println!("Get key: {key:?}");
     }
 
+    #[rstest]
+    #[case(None)]
+    #[case(Some("alice"))]
     #[tokio::test]
     #[serial_test::serial]
-    async fn test_get_request_extra_params() {
-        let extra_params = get_request_extra_params().await;
+    async fn test_get_request_extra_params(#[case] attestation_policy_selector: Option<&str>) {
+        let extra_params = get_request_extra_params(attestation_policy_selector).await;
 
         assert!(extra_params.is_object());
+
+        assert_eq!(
+            extra_params
+                .get(ATTESTATION_POLICY_SELECTOR_JSON_KEY)
+                .and_then(Value::as_str),
+            attestation_policy_selector,
+            "the id is only sent when it is set"
+        );
 
         let algos_json = extra_params
             .get(SUPPORTED_HASH_ALGORITHMS_JSON_KEY)
@@ -565,9 +586,12 @@ mod test {
         }
     }
 
+    #[rstest]
+    #[case(None)]
+    #[case(Some("alice"))]
     #[tokio::test]
     #[serial_test::serial]
-    async fn test_build_request() {
+    async fn test_build_request(#[case] attestation_policy_selector: Option<&str>) {
         let tees = vec![
             Tee::AzSnpVtpm,
             Tee::AzTdxVtpm,
@@ -580,14 +604,21 @@ mod test {
         ];
 
         let expected_version = String::from(KBS_PROTOCOL_VERSION);
-        let expected_extra_params = get_request_extra_params().await;
+        let expected_extra_params = get_request_extra_params(attestation_policy_selector).await;
 
         for tee in tees {
-            let request = build_request(tee).await;
+            let request = build_request(tee, attestation_policy_selector).await;
 
             assert_eq!(request.version, expected_version);
             assert_eq!(request.tee, tee);
             assert_eq!(request.extra_params, expected_extra_params);
+            assert_eq!(
+                request
+                    .extra_params
+                    .get(ATTESTATION_POLICY_SELECTOR_JSON_KEY)
+                    .and_then(Value::as_str),
+                attestation_policy_selector
+            );
         }
     }
 
@@ -605,7 +636,7 @@ mod test {
     #[case(json!({SELECTED_HASH_ALGORITHM_JSON_KEY: {}}), Err(Error::UnexpectedJSONDataType("string".into(), "{}".into())))]
     #[case(json!({SELECTED_HASH_ALGORITHM_JSON_KEY: true}), Err(Error::UnexpectedJSONDataType("string".into(), "true".into())))]
     #[case(json!({SELECTED_HASH_ALGORITHM_JSON_KEY: 99999}), Err(Error::UnexpectedJSONDataType("string".into(), "99999".into())))]
-    #[case(json!({SELECTED_HASH_ALGORITHM_JSON_KEY: 3.141}), Err(Error::UnexpectedJSONDataType("string".into(), "3.141".into())))]
+    #[case(json!({SELECTED_HASH_ALGORITHM_JSON_KEY: 42.141}), Err(Error::UnexpectedJSONDataType("string".into(), "42.141".into())))]
     fn test_get_hash_algorithm(
         #[case] extra_params: Value,
         #[case] expected_result: Result<HashAlgorithm>,

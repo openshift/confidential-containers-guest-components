@@ -4,9 +4,13 @@
 //
 
 use jose_jwk::Jwk;
+use p256::elliptic_curve::sec1::ToEncodedPoint;
 use std::{env, path::Path};
 
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine,
+};
 use clap::{Args, Parser, Subcommand};
 use confidential_data_hub::secret::{
     layout::{envelope::EnvelopeSecret, vault::VaultSecret},
@@ -17,11 +21,9 @@ use crypto::WrapType;
 use kms::plugins::aliyun::AliyunKmsClient;
 #[cfg(feature = "aws")]
 use kms::plugins::aws::AwsKmsClient;
-#[cfg(feature = "ehsm")]
-use kms::plugins::ehsm::EhsmKmsClient;
 use kms::{Encrypter, ProviderSettings};
 use rand::RngExt;
-#[cfg(any(feature = "ehsm", feature = "aws"))]
+#[cfg(feature = "aws")]
 use serde_json::Value;
 use tokio::{fs, io::AsyncWriteExt};
 use zeroize::Zeroizing;
@@ -36,6 +38,9 @@ enum Cli {
 
     /// Unseal the given secret
     Unseal(UnsealArgs),
+
+    /// Generate a P-256 EC signing keypair in JWK format
+    Keygen(KeygenArgs),
 }
 
 #[derive(Args)]
@@ -74,6 +79,18 @@ struct UnsealArgs {
     /// Skip validating the signature of the sealed secret.
     #[arg(short, long)]
     skip_verification: bool,
+}
+
+#[derive(Args)]
+#[command(author, version, about, long_about = None)]
+struct KeygenArgs {
+    /// Key ID to embed in the JWK
+    #[arg(long, default_value = "sealed-signing")]
+    kid: String,
+
+    /// Directory to write the key files to
+    #[arg(long, default_value = ".")]
+    output_dir: String,
 }
 
 #[derive(Subcommand)]
@@ -124,15 +141,11 @@ enum EnvelopeArgs {
     #[cfg(feature = "aliyun")]
     Ali(AliProviderArgs),
 
-    /// Intel eHSM driver to seal the envelope
-    #[cfg(feature = "ehsm")]
-    Ehsm(EhsmProviderArgs),
-
     /// AWS KMS driver to seal the envelope
     #[cfg(feature = "aws")]
     Aws(AwsProviderArgs),
 
-    /// Dummy driver to prevent the unreachable pattern for neither aliyun nor ehsm
+    /// Dummy driver to prevent an unreachable pattern with no KMS provider
     Dummy,
 }
 
@@ -154,18 +167,6 @@ struct AliProviderArgs {
     /// path of the client key to access the KMS
     #[arg(long)]
     client_key_file_path: String,
-}
-
-#[cfg(feature = "ehsm")]
-#[derive(Args)]
-struct EhsmProviderArgs {
-    /// path of the credential file
-    #[arg(short, long)]
-    credential_file_path: String,
-
-    /// endpoint of eHSM service
-    #[arg(short, long)]
-    endpoint: String,
 }
 
 #[cfg(feature = "aws")]
@@ -190,6 +191,9 @@ async fn main() {
         }
         Cli::Seal(seal_args) => {
             seal_secret(&seal_args).await;
+        }
+        Cli::Keygen(keygen_args) => {
+            generate_keys(&keygen_args);
         }
     }
 }
@@ -216,10 +220,6 @@ async fn unseal_secret(unseal_args: &UnsealArgs) {
             "ALIYUN_IN_GUEST_KEY_PATH",
             unseal_args.key_path.as_ref().expect("Key Path Required"),
         ),
-        "ehsm" => env::set_var(
-            "EHSM_IN_GUEST_KEY_PATH",
-            unseal_args.key_path.as_ref().expect("Key Path Required"),
-        ),
         "aws" => env::set_var(
             "AWS_IN_GUEST_KEY_PATH",
             unseal_args.key_path.as_ref().expect("Key Path Required"),
@@ -238,9 +238,9 @@ async fn unseal_secret(unseal_args: &UnsealArgs) {
     let blob = secret.unseal().await.expect("unseal failed");
 
     // Write the unsealed secret to the filesystem
-    let output_file_name = Path::new(&format!("{}.unsealed", &unseal_args.file_path)).to_owned();
+    let output_file_name = Path::new(&format!("{}.unsealed", unseal_args.file_path)).to_owned();
     if output_file_name.exists() {
-        panic!("{}", format!("{:?} already exists", &output_file_name));
+        panic!("{}", format!("{:?} already exists", output_file_name));
     }
     let mut output_file = fs::File::create(&output_file_name)
         .await
@@ -253,7 +253,7 @@ async fn unseal_secret(unseal_args: &UnsealArgs) {
 
     println!(
         "unseal success, secret is saved in newly generated file: '{:?}'",
-        &output_file_name
+        output_file_name
     );
 }
 
@@ -334,6 +334,78 @@ async fn seal_secret(seal_args: &SealArgs) {
     println!("{secret_string}");
 }
 
+fn generate_keys(args: &KeygenArgs) {
+    let mut scalar_bytes = [0u8; 32];
+    rand::rng().fill(&mut scalar_bytes);
+
+    let secret_key =
+        p256::SecretKey::from_slice(&scalar_bytes).expect("Failed to generate valid P-256 key");
+    let public_key = secret_key.public_key();
+    let point = public_key.to_encoded_point(false);
+
+    let d = URL_SAFE_NO_PAD.encode(secret_key.to_bytes());
+    let x = URL_SAFE_NO_PAD.encode(
+        point
+            .x()
+            .expect("uncompressed point must have x coordinate"),
+    );
+    let y = URL_SAFE_NO_PAD.encode(
+        point
+            .y()
+            .expect("uncompressed point must have y coordinate"),
+    );
+
+    let private_jwk = serde_json::json!({
+        "kty": "EC",
+        "crv": "P-256",
+        "alg": "ES256",
+        "use": "sig",
+        "kid": args.kid,
+        "d": d,
+        "x": x,
+        "y": y,
+    });
+
+    let public_jwk = serde_json::json!({
+        "kty": "EC",
+        "crv": "P-256",
+        "alg": "ES256",
+        "use": "sig",
+        "kid": args.kid,
+        "x": x,
+        "y": y,
+    });
+
+    let output_dir = Path::new(&args.output_dir);
+    let private_path = output_dir.join(format!("{}-private.json", args.kid));
+    let public_path = output_dir.join(format!("{}-public.json", args.kid));
+
+    if private_path.exists() {
+        panic!("{:?} already exists", private_path);
+    }
+    if public_path.exists() {
+        panic!("{:?} already exists", public_path);
+    }
+
+    std::fs::write(
+        &private_path,
+        serde_json::to_string_pretty(&private_jwk).expect("Failed to serialize JWK") + "\n",
+    )
+    .unwrap_or_else(|e| panic!("Failed to write {}: {e}", private_path.display()));
+
+    std::fs::write(
+        &public_path,
+        serde_json::to_string_pretty(&public_jwk).expect("Failed to serialize JWK") + "\n",
+    )
+    .unwrap_or_else(|e| panic!("Failed to write {}: {e}", public_path.display()));
+
+    println!(
+        "Generated {} and {}",
+        private_path.display(),
+        public_path.display()
+    );
+}
+
 async fn handle_envelope_provider(
     args: &EnvelopeArgs,
 ) -> (Box<dyn Encrypter>, ProviderSettings, String) {
@@ -360,34 +432,6 @@ async fn handle_envelope_provider(
                 .export_provider_settings()
                 .expect("aliyun export provider_settings failed");
             (Box::new(client), provider_settings, "aliyun".into())
-        }
-        #[cfg(feature = "ehsm")]
-        EnvelopeArgs::Ehsm(arg) => {
-            let (app_id, api_key) = {
-                let cred = fs::read_to_string(&arg.credential_file_path)
-                    .await
-                    .expect("read credential fail");
-                let cred_parsed: Value =
-                    serde_json::from_str(&cred).expect("serialize credential fail");
-                let app_id = cred_parsed
-                    .get("AppId")
-                    .expect("get app id value fail")
-                    .as_str()
-                    .expect("get app id string fail");
-                let api_key = cred_parsed
-                    .get("ApiKey")
-                    .expect("get api key value fail")
-                    .as_str()
-                    .expect("get api key string fail");
-                (app_id.to_owned(), api_key.to_owned())
-            };
-
-            let client = EhsmKmsClient::new(&app_id, &api_key, &arg.endpoint)
-                .expect("create ehsm client fail");
-            let provider_settings = client
-                .export_provider_settings()
-                .expect("aliyun export provider_settings fail");
-            (Box::new(client), provider_settings, "ehsm".into())
         }
         #[cfg(feature = "aws")]
         EnvelopeArgs::Aws(arg) => {

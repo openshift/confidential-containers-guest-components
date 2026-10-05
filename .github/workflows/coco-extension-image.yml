@@ -8,6 +8,13 @@ name: Build and publish the CoCo guest extension image
 #   * an EROFS + dm-verity disk image (+ its dm-verity root hash), using the
 #     same layout as kata's rootfs-image-coco-extension asset.
 #
+# The payload is built inside a pinned Ubuntu container
+# (tools/coco-extension/Dockerfile.builder) rather than directly on the runner,
+# so the binaries match the guest rootfs ABI regardless of the runner image.
+# One variant is published per supported guest release, and every tag and
+# release asset is qualified with it (e.g. "<sha>-ubuntu26.04-amd64"): the
+# extension ships no libc, so a variant is only usable on a matching guest.
+#
 # On pull requests everything is built and uploaded as workflow artifacts (no
 # registry push). On pushes to main the artifacts are published to ghcr.io
 # (tagged with the commit sha and "latest") and attested. On a published
@@ -23,6 +30,10 @@ on:
   release:
     types: [published]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -32,6 +43,8 @@ env:
   CONTAINER_IMAGE: ghcr.io/${{ github.repository }}/coco-extension
   # EROFS + dm-verity disk image flavour.
   DISK_IMAGE: ghcr.io/${{ github.repository }}/coco-extension-disk
+  # Cache for the build environments, keyed by a digest of the recipe.
+  BUILDER_IMAGE: ghcr.io/${{ github.repository }}/coco-extension-builder
   # Pause image bundled into the extension (kept in sync with kata versions.yaml).
   # This is transitional: we still unpack registry.k8s.io/pause into pause_bundle/
   # because kata's rootfs-image-coco-extension asset and components.toml contract
@@ -40,70 +53,77 @@ env:
   # stops baking pause into the coco extension.
   PAUSE_IMAGE_REPO: docker://registry.k8s.io/pause
   PAUSE_IMAGE_VERSION: "3.10"
-  NVAT_VERSION: "2026.03.02"
   UMOCI_VERSION: v0.6.0
+  # The C++ SDK is linked by the Rust bindings, so the two have to be the same
+  # release; the crate pin below is the single source of truth for both.
+  NVAT_CARGO_MANIFEST: attestation-agent/attester/Cargo.toml
 
 jobs:
   build:
-    name: build (${{ matrix.arch }})
+    name: build (${{ matrix.arch }}, ubuntu ${{ matrix.ubuntu }})
     permissions:
       contents: write # needed to upload disk images to the GitHub release
-      packages: write
-      id-token: write
-      attestations: write
+      packages: write # push OCI artifacts to ghcr.io
+      id-token: write # required for OIDC-based attestation signing
+      attestations: write # required to create build attestations
     strategy:
       fail-fast: false
       matrix:
+        # Guest releases we publish an extension for. The per-arch entries below
+        # apply to every variant.
+        ubuntu:
+        - "24.04"
+        - "26.04"
+        arch:
+        - x86_64
+        - aarch64
+        - s390x
         include:
         - arch: x86_64
           oci_arch: amd64
-          libc: musl
+          libc: gnu
           attester: snp-attester,tdx-attester
-          measured_rootfs: "yes"
           runner: ubuntu-24.04
         - arch: aarch64
           oci_arch: arm64
           libc: gnu
           attester: cca-attester
-          measured_rootfs: "yes"
           runner: ubuntu-24.04-arm
         - arch: s390x
           oci_arch: s390x
           libc: gnu
           attester: se-attester
-          measured_rootfs: "no"
           runner: s390x
     runs-on: ${{ matrix.runner }}
     env:
       ARCH: ${{ matrix.arch }}
       LIBC: ${{ matrix.libc }}
       ATTESTER: ${{ matrix.attester }}
-      # "kbs" enables cc_kbc, the KBS resource provider used on every arch.
-      RESOURCE_PROVIDER: kbs
-      MEASURED_ROOTFS: ${{ matrix.measured_rootfs }}
-      RUST_TARGET: ${{ matrix.arch }}-unknown-linux-${{ matrix.libc }}
+      UBUNTU_VERSION: ${{ matrix.ubuntu }}
+      VARIANT: ubuntu${{ matrix.ubuntu }}
     steps:
     - name: Harden the runner (Audit all outbound calls)
-      uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
       with:
         egress-policy: audit
 
-    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
 
-    - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+    # Logging in up front lets the builder cache below be reused; the payload
+    # images are pushed by the later steps with the same credentials.
+    - name: Log in to the Container registry
+      if: ${{ github.event_name != 'pull_request' }}
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
       with:
-        target: ${{ env.RUST_TARGET }}
-        cache: false
-        # This action injects RUSTFLAGS="-D warnings" by default, which leaks
-        # into every cargo invocation in the job — including third-party crates
-        # built from source by the NVIDIA Attestation SDK (its vendored regorus
-        # fails on the mismatched_lifetime_syntaxes lint) and our own component
-        # build. We only want to build here, not gate on warnings, so clear it.
-        rustflags: ""
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Install build tooling
+      env:
+        OCI_ARCH: ${{ matrix.oci_arch }}
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
@@ -113,37 +133,79 @@ jobs:
         # umoci is used to unpack the pause image into an OCI runtime bundle.
         # Prebuilt binaries exist for every architecture in the matrix.
         sudo curl -fsSL -o /usr/local/bin/umoci \
-          "https://github.com/opencontainers/umoci/releases/download/${UMOCI_VERSION}/umoci.linux.${{ matrix.oci_arch }}"
+          "https://github.com/opencontainers/umoci/releases/download/${UMOCI_VERSION}/umoci.linux.${OCI_ARCH}"
         sudo chmod +x /usr/local/bin/umoci
 
-    - name: Install NVIDIA Attestation SDK
-      if: ${{ matrix.arch == 'x86_64' }}
+    - name: Build or reuse the Ubuntu ${{ matrix.ubuntu }} builder image
+      env:
+        OCI_ARCH: ${{ matrix.oci_arch }}
+        EVENT_NAME: ${{ github.event_name }}
       run: |
-        tmpdir="$(mktemp -d)"
-        git clone https://github.com/NVIDIA/attestation-sdk "${tmpdir}/attestation-sdk"
-        git -C "${tmpdir}/attestation-sdk" fetch --depth=1 origin "${NVAT_VERSION}"
-        git -C "${tmpdir}/attestation-sdk" checkout FETCH_HEAD
-        cmake -S "${tmpdir}/attestation-sdk/nv-attestation-sdk-cpp" \
-          -B "${tmpdir}/attestation-sdk/nv-attestation-sdk-cpp/build" \
-          -DCMAKE_BUILD_TYPE=Release
-        cmake --build "${tmpdir}/attestation-sdk/nv-attestation-sdk-cpp/build" --parallel "$(nproc)"
-        sudo cmake --install "${tmpdir}/attestation-sdk/nv-attestation-sdk-cpp/build"
-        # The nv-attestation-sdk-sys build script looks for the C header at
-        # /usr/include/nvat.h, but cmake installs it under /usr/local/include.
-        # Symlink it (matches kata's coco-guest-components builder).
-        sudo mkdir -p /usr/include
-        sudo ln -sf /usr/local/include/nvat.h /usr/include/nvat.h
-        sudo ldconfig
-        rm -rf "${tmpdir}"
+        rust_toolchain="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+        # The NVIDIA SDK is only consumed by the x86_64 attestation-agent-nv
+        # variant; an empty version skips it entirely.
+        nvat_version=""
+        if [ "${ARCH}" = "x86_64" ]; then
+          nvat_version="$(sed -n \
+            's/^nv-attestation-sdk[[:space:]]*=.*tag[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+            "${NVAT_CARGO_MANIFEST}")"
+          [ -n "${nvat_version}" ] || {
+            echo "failed to read the nv-attestation-sdk tag from ${NVAT_CARGO_MANIFEST}" >&2
+            exit 1
+          }
+        fi
+
+        # Building the environment (notably the NVIDIA SDK) costs more than
+        # building the payload itself, so reuse a published one whenever the
+        # recipe and its pinned versions are unchanged.
+        cache_key="$( { cat tools/coco-extension/Dockerfile.builder; \
+                        echo "${UBUNTU_VERSION} ${rust_toolchain} ${UMOCI_VERSION} ${nvat_version}"; \
+                      } | sha256sum | cut -c1-12)"
+        builder="${BUILDER_IMAGE}:${VARIANT}-${OCI_ARCH}-${cache_key}"
+        echo "BUILDER=${builder}" >> "${GITHUB_ENV}"
+
+        # A miss is expected on pull requests, which cannot authenticate to pull.
+        if docker pull "${builder}"; then
+          exit 0
+        fi
+
+        docker build \
+          -f tools/coco-extension/Dockerfile.builder \
+          --build-arg "UBUNTU_VERSION=${UBUNTU_VERSION}" \
+          --build-arg "RUST_TOOLCHAIN=${rust_toolchain}" \
+          --build-arg "UMOCI_VERSION=${UMOCI_VERSION}" \
+          --build-arg "TARGETARCH=${OCI_ARCH}" \
+          --build-arg "NVAT_VERSION=${nvat_version}" \
+          -t "${builder}" \
+          tools/coco-extension
+
+        if [ "${EVENT_NAME}" != "pull_request" ]; then
+          docker push "${builder}"
+        fi
 
     - name: Assemble extension rootfs
-      run: ./tools/coco-extension/assemble-rootfs.sh
+      run: |
+        docker run --rm \
+          -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
+          -w "${GITHUB_WORKSPACE}" \
+          -e ARCH \
+          -e LIBC \
+          -e ATTESTER \
+          -e PAUSE_IMAGE_REPO \
+          -e PAUSE_IMAGE_VERSION \
+          -e HOME=/tmp \
+          --user "$(id -u):$(id -g)" \
+          "${BUILDER}" \
+          ./tools/coco-extension/assemble-rootfs.sh
 
     - name: Build OCI container image
+      env:
+        GIT_SHA: ${{ github.sha }}
+        OCI_ARCH: ${{ matrix.oci_arch }}
       run: |
         docker build \
           -f tools/coco-extension/Dockerfile \
-          -t "${CONTAINER_IMAGE}:${{ github.sha }}-${{ matrix.oci_arch }}" \
+          -t "${CONTAINER_IMAGE}:${GIT_SHA}-${VARIANT}-${OCI_ARCH}" \
           build/coco-extension-rootfs
 
     - name: Build EROFS + dm-verity disk image
@@ -152,39 +214,34 @@ jobs:
     # --- Pull request: build only, upload artifacts, no registry push ---------
     - name: Save OCI image for artifact upload
       if: ${{ github.event_name == 'pull_request' }}
+      env:
+        GIT_SHA: ${{ github.sha }}
+        OCI_ARCH: ${{ matrix.oci_arch }}
       run: |
         mkdir -p build/artifacts
-        docker save "${CONTAINER_IMAGE}:${{ github.sha }}-${{ matrix.oci_arch }}" \
-          -o "build/artifacts/coco-extension-oci-${{ matrix.oci_arch }}.tar"
+        docker save "${CONTAINER_IMAGE}:${GIT_SHA}-${VARIANT}-${OCI_ARCH}" \
+          -o "build/artifacts/coco-extension-oci-${VARIANT}-${OCI_ARCH}.tar"
         cp build/coco-extension-image/kata-containers-coco-extension.img \
-          "build/artifacts/kata-containers-coco-extension-${{ matrix.oci_arch }}.img"
+          "build/artifacts/kata-containers-coco-extension-${VARIANT}-${OCI_ARCH}.img"
         if [ -f build/coco-extension-image/root_hash_coco-extension.txt ]; then
           cp build/coco-extension-image/root_hash_coco-extension.txt \
-            "build/artifacts/root_hash_coco-extension-${{ matrix.oci_arch }}.txt"
+            "build/artifacts/root_hash_coco-extension-${VARIANT}-${OCI_ARCH}.txt"
         fi
 
     - name: Upload artifacts
       if: ${{ github.event_name == 'pull_request' }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: coco-extension-${{ matrix.oci_arch }}
+        name: coco-extension-ubuntu${{ matrix.ubuntu }}-${{ matrix.oci_arch }}
         path: build/artifacts/
         retention-days: 15
         if-no-files-found: error
 
     # --- Push to main / release: publish to ghcr.io and attest ----------------
-    # The immutable per-arch reference is always "<sha>-<arch>"; the friendly
-    # tags (latest, or the release version) are assembled into multi-arch
-    # manifests in the publish-manifests job below.
-    - name: Log in to the Container registry
-      if: ${{ github.event_name != 'pull_request' }}
-      uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v3.6.0
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
-    - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3 # v2.0.0
+    # The immutable per-arch reference is always "<sha>-<variant>-<arch>"; the
+    # friendly tags (latest, or the release version) are assembled into
+    # per-variant multi-arch manifests in the publish-manifests job below.
+    - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
       if: ${{ github.event_name != 'pull_request' }}
       with:
         version: 1.2.0
@@ -192,8 +249,11 @@ jobs:
     - name: Publish OCI container image
       id: publish-container
       if: ${{ github.event_name != 'pull_request' }}
+      env:
+        GIT_SHA: ${{ github.sha }}
+        OCI_ARCH: ${{ matrix.oci_arch }}
       run: |
-        arch_tag="${{ github.sha }}-${{ matrix.oci_arch }}"
+        arch_tag="${GIT_SHA}-${VARIANT}-${OCI_ARCH}"
         docker push "${CONTAINER_IMAGE}:${arch_tag}"
         digest="$(docker inspect --format='{{index .RepoDigests 0}}' "${CONTAINER_IMAGE}:${arch_tag}" | cut -d'@' -f2)"
         echo "image=${CONTAINER_IMAGE}" >> "$GITHUB_OUTPUT"
@@ -203,8 +263,11 @@ jobs:
       id: publish-disk
       if: ${{ github.event_name != 'pull_request' }}
       working-directory: build/coco-extension-image
+      env:
+        GIT_SHA: ${{ github.sha }}
+        OCI_ARCH: ${{ matrix.oci_arch }}
       run: |
-        arch_tag="${{ github.sha }}-${{ matrix.oci_arch }}"
+        arch_tag="${GIT_SHA}-${VARIANT}-${OCI_ARCH}"
         files=(kata-containers-coco-extension.img)
         if [ -f root_hash_coco-extension.txt ]; then
           files+=(root_hash_coco-extension.txt)
@@ -218,7 +281,7 @@ jobs:
 
     - name: Generate provenance for the OCI container image
       if: ${{ github.event_name != 'pull_request' }}
-      uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
       with:
         subject-name: ${{ steps.publish-container.outputs.image }}
         subject-digest: ${{ steps.publish-container.outputs.digest }}
@@ -226,7 +289,7 @@ jobs:
 
     - name: Generate provenance for the disk image
       if: ${{ github.event_name != 'pull_request' }}
-      uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
       with:
         subject-name: ${{ steps.publish-disk.outputs.image }}
         subject-digest: ${{ steps.publish-disk.outputs.digest }}
@@ -238,34 +301,43 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         RELEASE_TAG: ${{ github.event.release.tag_name }}
+        OCI_ARCH: ${{ matrix.oci_arch }}
       working-directory: build/coco-extension-image
       run: |
         cp kata-containers-coco-extension.img \
-          "kata-containers-coco-extension-${{ matrix.oci_arch }}.img"
-        assets=("kata-containers-coco-extension-${{ matrix.oci_arch }}.img")
+          "kata-containers-coco-extension-${VARIANT}-${OCI_ARCH}.img"
+        assets=("kata-containers-coco-extension-${VARIANT}-${OCI_ARCH}.img")
         if [ -f root_hash_coco-extension.txt ]; then
           cp root_hash_coco-extension.txt \
-            "root_hash_coco-extension-${{ matrix.oci_arch }}.txt"
-          assets+=("root_hash_coco-extension-${{ matrix.oci_arch }}.txt")
+            "root_hash_coco-extension-${VARIANT}-${OCI_ARCH}.txt"
+          assets+=("root_hash_coco-extension-${VARIANT}-${OCI_ARCH}.txt")
         fi
         gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
 
   publish-manifests:
-    name: publish multi-arch manifests
+    name: publish multi-arch manifests (ubuntu ${{ matrix.ubuntu }})
     if: ${{ github.event_name != 'pull_request' }}
     needs: build
     permissions:
       contents: read
-      packages: write
+      packages: write # push multi-arch manifests to ghcr.io
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu:
+        - "24.04"
+        - "26.04"
     runs-on: ubuntu-24.04
+    env:
+      VARIANT: ubuntu${{ matrix.ubuntu }}
     steps:
     - name: Harden the runner (Audit all outbound calls)
-      uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
       with:
         egress-policy: audit
 
     - name: Log in to the Container registry
-      uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v3.6.0
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
@@ -277,16 +349,17 @@ jobs:
         # On release: the commit sha plus the immutable release version, so
         # consumers can pin to it.
         EXTRA_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || 'latest' }}
+        GIT_SHA: ${{ github.sha }}
       run: |
         for image in "${CONTAINER_IMAGE}" "${DISK_IMAGE}"; do
-          for tag in "${{ github.sha }}" "${EXTRA_TAG}"; do
+          for tag in "${GIT_SHA}-${VARIANT}" "${EXTRA_TAG}-${VARIANT}"; do
             docker manifest create "${image}:${tag}" \
-              --amend "${image}:${{ github.sha }}-amd64" \
-              --amend "${image}:${{ github.sha }}-arm64" \
-              --amend "${image}:${{ github.sha }}-s390x"
-            docker manifest annotate --arch amd64 --os linux "${image}:${tag}" "${image}:${{ github.sha }}-amd64"
-            docker manifest annotate --arch arm64 --os linux "${image}:${tag}" "${image}:${{ github.sha }}-arm64"
-            docker manifest annotate --arch s390x --os linux "${image}:${tag}" "${image}:${{ github.sha }}-s390x"
+              --amend "${image}:${GIT_SHA}-${VARIANT}-amd64" \
+              --amend "${image}:${GIT_SHA}-${VARIANT}-arm64" \
+              --amend "${image}:${GIT_SHA}-${VARIANT}-s390x"
+            docker manifest annotate --arch amd64 --os linux "${image}:${tag}" "${image}:${GIT_SHA}-${VARIANT}-amd64"
+            docker manifest annotate --arch arm64 --os linux "${image}:${tag}" "${image}:${GIT_SHA}-${VARIANT}-arm64"
+            docker manifest annotate --arch s390x --os linux "${image}:${tag}" "${image}:${GIT_SHA}-${VARIANT}-s390x"
             docker manifest push "${image}:${tag}"
           done
         done

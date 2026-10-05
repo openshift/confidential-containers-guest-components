@@ -103,12 +103,6 @@ aws = ["kms/aws"]
 # support coco-KBS to provide confidential resources
 kbs = ["kms/kbs"]
 
-# support sev to provide confidential resources
-sev = ["kms/sev"]
-
-# support eHSM stacks (KMS, ...)
-ehsm = []
-
 # Binary RPC type
 bin = ["clap", "shadow-rs", "tracing-subscriber"]
 ttrpc = ["dep:ttrpc", "tokio/signal", "protos/ttrpc"]
